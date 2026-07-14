@@ -6,6 +6,10 @@
   "permissions": [
     "core:default",
     "clipboard-manager:allow-read-text",
-    "dialog:allow-open"
+    "dialog:allow-open",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [{ "url": "http://*" }, { "url": "https://*" }]
+    }
   ]
 }

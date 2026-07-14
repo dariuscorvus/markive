@@ -305,6 +305,7 @@ pub fn run(launch: Launch) {
         }))
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .manage(Mutex::new(LaunchState {
             pending: OpenRequest::from_launch(launch),
             frontend_ready: false,

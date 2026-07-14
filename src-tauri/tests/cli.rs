@@ -20,7 +20,7 @@ fn render_prints_sanitized_html_for_a_file() {
 
     let stdout = String::from_utf8(output.stdout).expect("stdout is UTF-8");
     assert!(output.status.success());
-    assert!(stdout.contains("<h1>Title</h1>"));
+    assert!(stdout.contains("<h1 id=\"title\">Title</h1>"));
     assert!(!stdout.contains("<script"));
 
     std::fs::remove_file(&path).expect("remove test file");
