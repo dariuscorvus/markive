@@ -1,6 +1,6 @@
 <script lang="ts">
   import { ClipboardPaste, FileText, FolderOpen } from "@lucide/svelte";
-  import { invoke } from "@tauri-apps/api/core";
+  import { convertFileSrc, invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { onMount } from "svelte";
