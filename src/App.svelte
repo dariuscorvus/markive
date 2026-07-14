@@ -6,6 +6,7 @@
   import { onMount } from "svelte";
   import { readText } from "@tauri-apps/plugin-clipboard-manager";
   import { open } from "@tauri-apps/plugin-dialog";
+  import { openUrl } from "@tauri-apps/plugin-opener";
 
   import { Button } from "$lib/components/ui/button";
 
@@ -232,6 +233,61 @@
       errorMessage = error instanceof Error ? error.message : String(error);
     }
   })();
+
+  // The webview must never navigate: every link click is intercepted
+  // and routed by target type. Registered on window in the capture
+  // phase to run before Tauri's own document-level click handling,
+  // which otherwise navigates the webview.
+  function handleLinkClick(event: MouseEvent) {
+    const anchor = (event.target as Element).closest("a");
+    if (!anchor) return;
+
+    event.preventDefault();
+    event.stopImmediatePropagation();
+
+    const href = anchor.getAttribute("href");
+    if (!href) return;
+
+    void openLink(href);
+  }
+
+  onMount(() => {
+    window.addEventListener("click", handleLinkClick, { capture: true });
+    return () => window.removeEventListener("click", handleLinkClick, { capture: true });
+  });
+
+  async function openLink(href: string) {
+    errorMessage = null;
+
+    try {
+      if (href.startsWith("#")) {
+        const target = document.getElementById(decodeURIComponent(href.slice(1)));
+        target?.scrollIntoView({ behavior: "smooth", block: "start" });
+        return;
+      }
+
+      if (href.startsWith("http://") || href.startsWith("https://")) {
+        await openUrl(href);
+        return;
+      }
+
+      if (href.startsWith("/")) {
+        const path = decodeURIComponent(href);
+
+        if (!isMarkdownPath(path)) {
+          errorMessage = `${fileName(path)} is not a Markdown file.`;
+          return;
+        }
+
+        await openDocumentAtPath(path);
+        return;
+      }
+
+      errorMessage = `Blocked link: ${href}`;
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : String(error);
+    }
+  }
 
   function handleKeydown(event: KeyboardEvent) {
     if (!(event.metaKey || event.ctrlKey)) return;

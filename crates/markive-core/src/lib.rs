@@ -9,7 +9,7 @@ use std::path::Component;
 
 use ammonia::Builder;
 use percent_encoding::percent_decode_str;
-use pulldown_cmark::{Event, Options, Parser, Tag};
+use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 
 /// File extensions Markive treats as Markdown documents.
 pub const MARKDOWN_EXTENSIONS: [&str; 4] = ["md", "markdown", "mdown", "mkd"];
@@ -88,18 +88,73 @@ fn markdown_options() -> Options {
 }
 
 fn sanitize(html: &str) -> String {
-    Builder::default()
+    let mut builder = Builder::default();
+    builder
         .add_tags(["input"])
-        .add_tag_attributes("input", ["checked", "disabled", "type"])
-        .clean(html)
-        .to_string()
+        .add_tag_attributes("input", ["checked", "disabled", "type"]);
+    for heading in ["h1", "h2", "h3", "h4", "h5", "h6"] {
+        builder.add_tag_attributes(heading, ["id"]);
+    }
+    builder.clean(html).to_string()
+}
+
+/// GitHub-style anchor slug: lowercase, alphanumerics kept, spaces and
+/// hyphens become hyphens, everything else dropped.
+fn slugify(text: &str) -> String {
+    text.chars()
+        .filter_map(|c| {
+            if c.is_alphanumeric() {
+                Some(c.to_lowercase().next().unwrap_or(c))
+            } else if c == ' ' || c == '-' {
+                Some('-')
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// Parses Markdown and gives every heading without an explicit id a
+/// slug generated from its text, deduplicated with `-N` suffixes.
+fn events_with_heading_ids(markdown: &str) -> Vec<Event<'_>> {
+    let mut events: Vec<Event> = Parser::new_ext(markdown, markdown_options()).collect();
+    let mut seen = std::collections::HashMap::<String, usize>::new();
+
+    for index in 0..events.len() {
+        let Event::Start(Tag::Heading { id: None, .. }) = &events[index] else {
+            continue;
+        };
+
+        let mut text = String::new();
+        for event in &events[index + 1..] {
+            match event {
+                Event::End(TagEnd::Heading(_)) => break,
+                Event::Text(t) | Event::Code(t) => text.push_str(t),
+                _ => {}
+            }
+        }
+
+        let slug = slugify(&text);
+        let count = seen.entry(slug.clone()).or_insert(0);
+        let unique = if *count == 0 {
+            slug
+        } else {
+            format!("{slug}-{count}")
+        };
+        *count += 1;
+
+        if let Event::Start(Tag::Heading { id, .. }) = &mut events[index] {
+            *id = Some(unique.into());
+        }
+    }
+
+    events
 }
 
 #[must_use]
 pub fn render_markdown(markdown: &str) -> String {
-    let parser = Parser::new_ext(markdown, markdown_options());
     let mut html = String::new();
-    pulldown_cmark::html::push_html(&mut html, parser);
+    pulldown_cmark::html::push_html(&mut html, events_with_heading_ids(markdown).into_iter());
 
     sanitize(&html)
 }
@@ -120,30 +175,56 @@ pub fn render_markdown(markdown: &str) -> String {
 pub fn render_document(markdown: &str, base_dir: Option<&Path>) -> RenderedDocument {
     let mut local_images = Vec::new();
 
-    let events = Parser::new_ext(markdown, markdown_options()).map(|event| match event {
-        Event::Start(Tag::Image {
-            link_type,
-            dest_url,
-            title,
-            id,
-        }) => {
-            let dest_url = match resolve_local_image(&dest_url, base_dir) {
-                Some(path) => {
-                    let resolved = path.to_string_lossy().into_owned();
-                    local_images.push(path);
-                    resolved.into()
-                }
-                None => dest_url,
-            };
+    let events = events_with_heading_ids(markdown)
+        .into_iter()
+        .map(|event| match event {
             Event::Start(Tag::Image {
                 link_type,
                 dest_url,
                 title,
                 id,
-            })
-        }
-        other => other,
-    });
+            }) => {
+                let dest_url = match resolve_local_target(&dest_url, base_dir) {
+                    Some(path) => {
+                        let resolved = path.to_string_lossy().into_owned();
+                        local_images.push(path);
+                        resolved.into()
+                    }
+                    None => dest_url,
+                };
+                Event::Start(Tag::Image {
+                    link_type,
+                    dest_url,
+                    title,
+                    id,
+                })
+            }
+            // Local link targets become absolute so the app can open
+            // them regardless of its working directory. Anchors and
+            // URLs pass through.
+            Event::Start(Tag::Link {
+                link_type,
+                dest_url,
+                title,
+                id,
+            }) => {
+                let dest_url = if dest_url.starts_with('#') {
+                    dest_url
+                } else {
+                    match resolve_local_target(&dest_url, base_dir) {
+                        Some(path) => path.to_string_lossy().into_owned().into(),
+                        None => dest_url,
+                    }
+                };
+                Event::Start(Tag::Link {
+                    link_type,
+                    dest_url,
+                    title,
+                    id,
+                })
+            }
+            other => other,
+        });
 
     let mut html = String::new();
     pulldown_cmark::html::push_html(&mut html, events);
@@ -174,7 +255,7 @@ fn has_url_scheme(src: &str) -> bool {
 /// Resolves an image source to an absolute filesystem path, or `None`
 /// when the source is remote, empty, not decodable, or relative with
 /// no base directory to resolve against.
-fn resolve_local_image(src: &str, base_dir: Option<&Path>) -> Option<PathBuf> {
+fn resolve_local_target(src: &str, base_dir: Option<&Path>) -> Option<PathBuf> {
     if src.is_empty() || has_url_scheme(src) {
         return None;
     }
@@ -247,11 +328,39 @@ mod tests {
 
         let html = render_markdown(markdown);
 
-        assert!(html.contains("<h1>Markive</h1>"));
+        assert!(html.contains("<h1 id=\"markive\">Markive</h1>"));
         assert!(html.contains("<del>old</del>"));
         assert!(html.contains("<table>"));
         assert!(html.contains("type=\"checkbox\""));
         assert!(html.contains("checked"));
+    }
+
+    #[test]
+    fn headings_get_deduplicated_anchor_ids() {
+        let html = render_markdown("# My Heading!\n\n## My Heading!\n\n### Config `opts`\n");
+
+        assert!(html.contains("<h1 id=\"my-heading\">"));
+        assert!(html.contains("<h2 id=\"my-heading-1\">"));
+        assert!(html.contains("<h3 id=\"config-opts\">"));
+    }
+
+    #[test]
+    fn resolves_relative_markdown_links_against_the_base_directory() {
+        let rendered = render_document("[next](notes/next.md)", Some(Path::new("/docs")));
+
+        assert!(rendered.html().contains("href=\"/docs/notes/next.md\""));
+        assert!(rendered.local_images().is_empty());
+    }
+
+    #[test]
+    fn keeps_anchor_and_remote_links_untouched() {
+        let markdown = "[a](#section)\n\n[b](https://example.com)\n\n[c](mailto:x@y.z)";
+
+        let rendered = render_document(markdown, Some(Path::new("/docs")));
+
+        assert!(rendered.html().contains("href=\"#section\""));
+        assert!(rendered.html().contains("href=\"https://example.com\""));
+        assert!(rendered.html().contains("href=\"mailto:x@y.z\""));
     }
 
     #[test]
