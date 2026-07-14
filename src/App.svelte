@@ -3,9 +3,10 @@
   import { convertFileSrc, invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
+  import { getCurrentWindow } from "@tauri-apps/api/window";
   import { onMount } from "svelte";
   import { readText } from "@tauri-apps/plugin-clipboard-manager";
-  import { open } from "@tauri-apps/plugin-dialog";
+  import { open, save } from "@tauri-apps/plugin-dialog";
   import { openUrl } from "@tauri-apps/plugin-opener";
 
   import { Button } from "$lib/components/ui/button";
@@ -34,8 +35,16 @@
   let documentSource = $state<DocumentSource | null>(null);
   let renderedHtml = $state("");
   let sourceText = $state("");
+  // Content as last loaded or saved; null for documents that never
+  // had a file (clipboard, stdin), which stay dirty until saved.
+  let savedText = $state<string | null>(null);
   let viewMode = $state<"rendered" | "source" | "split">("rendered");
   let errorMessage = $state<string | null>(null);
+  let confirmResolve = $state<((choice: "save" | "discard" | "cancel") => void) | null>(null);
+
+  let isDirty = $derived(
+    documentSource !== null && (savedText === null || sourceText !== savedText),
+  );
   let isOpening = $state(false);
   let isPasting = $state(false);
   let isDragOver = $state(false);
@@ -102,7 +111,51 @@
     documentSource = { kind: "file", path: document.path };
     renderedHtml = convertLocalImageSources(document.html);
     sourceText = document.content;
+    savedText = document.content;
     viewMode = "rendered";
+  }
+
+  /// Asks what to do with unsaved changes. Resolved by the modal.
+  function confirmLoseChanges(): Promise<"save" | "discard" | "cancel"> {
+    return new Promise((resolve) => {
+      confirmResolve = (choice) => {
+        confirmResolve = null;
+        resolve(choice);
+      };
+    });
+  }
+
+  async function saveCurrentDocument(): Promise<boolean> {
+    let path = documentSource?.kind === "file" ? documentSource.path : null;
+
+    if (!path) {
+      path = await save({
+        title: "Save Markdown",
+        filters: [{ name: "Markdown", extensions: MARKDOWN_EXTENSIONS }],
+      });
+      if (!path) return false;
+    }
+
+    await invoke("save_file", { path, content: sourceText });
+    documentSource = { kind: "file", path };
+    savedText = sourceText;
+    return true;
+  }
+
+  // Gate for every action that replaces or closes the document.
+  async function canDiscardDocument(): Promise<boolean> {
+    if (!isDirty) return true;
+
+    const choice = await confirmLoseChanges();
+    if (choice === "cancel") return false;
+    if (choice === "discard") return true;
+
+    try {
+      return await saveCurrentDocument();
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : String(error);
+      return false;
+    }
   }
 
   async function renderCurrentSource() {
@@ -151,6 +204,7 @@
 
   async function openFile() {
     if (isOpening) return;
+    if (!(await canDiscardDocument())) return;
 
     isOpening = true;
     errorMessage = null;
@@ -180,6 +234,7 @@
 
   async function pasteClipboard() {
     if (isPasting) return;
+    if (!(await canDiscardDocument())) return;
 
     isPasting = true;
     errorMessage = null;
@@ -219,6 +274,7 @@
       documentSource = { kind: "clipboard" };
       renderedHtml = convertLocalImageSources(html);
       sourceText = clipboardText;
+      savedText = null;
       viewMode = "rendered";
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : String(error);
@@ -233,6 +289,9 @@
     try {
       if (request.error) {
         errorMessage = request.error;
+      } else if (!(await canDiscardDocument())) {
+        // Keep the current document; a stdin temp file left behind in
+        // the temp dir is cleaned up by the OS.
       } else if (request.path) {
         await openDocumentAtPath(request.path);
       } else if (request.stdinPath) {
@@ -242,6 +301,7 @@
         documentSource = { kind: "stdin" };
         renderedHtml = convertLocalImageSources(stdinDocument.html);
         sourceText = stdinDocument.content;
+        savedText = null;
         viewMode = "rendered";
       }
     } catch (error) {
@@ -252,6 +312,7 @@
     errorMessage = null;
 
     if (paths.length === 0) return;
+    if (!(await canDiscardDocument())) return;
 
     if (paths.length > 1) {
       errorMessage = "Multiple files were dropped. Drop one Markdown file.";
@@ -324,6 +385,22 @@
     return () => window.removeEventListener("click", handleLinkClick, { capture: true });
   });
 
+  // Closing the window guards unsaved changes. Quit (cmd+Q) is
+  // deliberately unguarded, following the macOS document model; #15
+  // makes quit lossless by restoring the session including unsaved
+  // edits.
+  onMount(() => {
+    const unlistenClose = getCurrentWindow().onCloseRequested(async (event) => {
+      if (!(await canDiscardDocument())) {
+        event.preventDefault();
+      }
+    });
+
+    return () => {
+      void unlistenClose.then((stop) => stop());
+    };
+  });
+
   async function openLink(href: string) {
     errorMessage = null;
 
@@ -391,7 +468,7 @@
 </script>
 
 <svelte:head>
-  <title>{documentName}</title>
+  <title>{isDirty ? `• ${documentName}` : documentName}</title>
 </svelte:head>
 
 <svelte:window onkeydown={handleKeydown} />
@@ -403,6 +480,9 @@
     <div class="flex min-w-0 items-center gap-2 font-mono text-xs text-muted-foreground">
       <FileText aria-hidden="true" class="size-3.5 shrink-0" strokeWidth={1.75} />
       <span class="truncate">{sourceLabel}</span>
+      {#if isDirty}
+        <span class="shrink-0 text-foreground" title="Unsaved changes" aria-label="Unsaved changes">•</span>
+      {/if}
     </div>
     {#if documentSource}
       <div class="flex items-center gap-1">
@@ -518,3 +598,28 @@
     </section>
   {/if}
 </main>
+
+{#if confirmResolve}
+  <div
+    class="fixed inset-0 z-50 grid place-items-center bg-black/40"
+    role="alertdialog"
+    aria-modal="true"
+    aria-labelledby="confirm-title"
+  >
+    <div class="w-full max-w-sm rounded-lg border border-border bg-background p-6 shadow-lg">
+      <h2 id="confirm-title" class="text-base font-medium">Unsaved changes</h2>
+      <p class="mt-2 text-sm text-muted-foreground">
+        {documentName} has unsaved changes. Save them before continuing?
+      </p>
+      <div class="mt-6 flex justify-end gap-2">
+        <Button variant="ghost" size="sm" onclick={() => confirmResolve?.("cancel")}>
+          Cancel
+        </Button>
+        <Button variant="outline" size="sm" onclick={() => confirmResolve?.("discard")}>
+          Discard
+        </Button>
+        <Button size="sm" onclick={() => confirmResolve?.("save")}>Save</Button>
+      </div>
+    </div>
+  </div>
+{/if}

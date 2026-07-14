@@ -203,6 +203,13 @@ async fn open_stdin_document(app: tauri::AppHandle, path: String) -> Result<Stdi
     })
 }
 
+/// Writes document content to a path. Plain write for now; #10 makes
+/// it atomic.
+#[tauri::command]
+async fn save_file(path: String, content: String) -> Result<(), String> {
+    std::fs::write(&path, content).map_err(|error| format!("Unable to save {path}: {error}"))
+}
+
 fn read_clipboard_files() -> Result<Vec<String>, String> {
     use clipboard_rs::{Clipboard, ClipboardContext};
 
@@ -358,15 +365,16 @@ pub fn run(launch: Launch) {
             render_markdown,
             render_source,
             clipboard_files,
-            launch_document
+            launch_document,
+            save_file
         ])
         .build(tauri::generate_context!())
         .expect("failed to build Markive");
 
     app.run(|app, event| {
         #[cfg(target_os = "macos")]
-        if let tauri::RunEvent::Opened { urls } = event {
-            for url in &urls {
+        if let tauri::RunEvent::Opened { urls } = &event {
+            for url in urls {
                 let request = match document_path_from_url(url) {
                     Ok(path) => OpenRequest {
                         path: Some(path),
