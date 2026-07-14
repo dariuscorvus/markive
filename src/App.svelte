@@ -2,6 +2,8 @@
   import { ClipboardPaste, FileText, FolderOpen } from "@lucide/svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
+  import { getCurrentWebview } from "@tauri-apps/api/webview";
+  import { onMount } from "svelte";
   import { readText } from "@tauri-apps/plugin-clipboard-manager";
   import { open } from "@tauri-apps/plugin-dialog";
 
@@ -9,7 +11,7 @@
 
   type OpenedDocument = {
     path: string;
-    content: string;
+    html: string;
   };
 
   type DocumentSource = { kind: "file"; path: string } | { kind: "clipboard" };
@@ -23,6 +25,7 @@
   let errorMessage = $state<string | null>(null);
   let isOpening = $state(false);
   let isPasting = $state(false);
+  let isDragOver = $state(false);
 
   let documentName = $derived(
     documentSource?.kind === "file"
@@ -48,14 +51,31 @@
     return MARKDOWN_EXTENSIONS.includes(extension);
   }
 
+  // The backend resolves local image sources to absolute filesystem
+  // paths; the webview can only load them through the asset protocol.
+  function convertLocalImageSources(html: string): string {
+    const parsed = new DOMParser().parseFromString(html, "text/html");
+
+    for (const image of parsed.querySelectorAll("img")) {
+      const src = image.getAttribute("src");
+      if (!src?.startsWith("/")) continue;
+
+      try {
+        image.setAttribute("src", convertFileSrc(decodeURIComponent(src)));
+      } catch {
+        // Malformed percent-encoding: leave the source as-is; the
+        // image stays a broken reference with its alt text.
+      }
+    }
+
+    return parsed.body.innerHTML;
+  }
+
   async function openDocumentAtPath(path: string) {
     const document = await invoke<OpenedDocument>("open_document", { path });
-    const html = await invoke<string>("render_markdown", {
-      markdown: document.content,
-    });
 
     documentSource = { kind: "file", path: document.path };
-    renderedHtml = html;
+    renderedHtml = convertLocalImageSources(document.html);
   }
 
   async function openFile() {
@@ -146,10 +166,50 @@
       errorMessage = error instanceof Error ? error.message : String(error);
     }
   }
+  async function openDroppedFiles(paths: string[]) {
+    errorMessage = null;
 
-  // Documents arrive from the command line at startup (`markive path.md`)
-  // and as macOS open-file events while running (Finder "Open With").
-  // The listener registers before the startup fetch so no event is lost.
+    if (paths.length === 0) return;
+
+    if (paths.length > 1) {
+      errorMessage = "Multiple files were dropped. Drop one Markdown file.";
+      return;
+    }
+
+    const droppedPath = paths[0];
+
+    if (!isMarkdownPath(droppedPath)) {
+      errorMessage = `${fileName(droppedPath)} is not a Markdown file.`;
+      return;
+    }
+
+    try {
+      await openDocumentAtPath(droppedPath);
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  // HTML5 drop events carry no file paths in Tauri; the webview drag-drop
+  // event is the only source of absolute paths.
+  onMount(() => {
+    const unlisten = getCurrentWebview().onDragDropEvent((event) => {
+      if (event.payload.type === "enter" || event.payload.type === "over") {
+        isDragOver = true;
+      } else if (event.payload.type === "leave") {
+        isDragOver = false;
+      } else if (event.payload.type === "drop") {
+        isDragOver = false;
+        void openDroppedFiles(event.payload.paths);
+      }
+    });
+
+    return () => {
+      void unlisten.then((stop) => stop());
+    };
+  });
+
+  // Open a document passed on the command line (`markive path.md`).
   void (async () => {
     try {
       await listen<OpenRequest>("open-document", (event) => void handleOpenRequest(event.payload));
@@ -183,7 +243,9 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
-<main class="grid min-h-screen grid-rows-[2.75rem_1fr] bg-background text-foreground">
+<main
+  class={`grid min-h-screen grid-rows-[2.75rem_1fr] bg-background text-foreground ${isDragOver ? "ring-2 ring-inset ring-ring" : ""}`}
+>
   <header class="path-rail flex items-center justify-between gap-4 border-b border-border px-4">
     <div class="flex min-w-0 items-center gap-2 font-mono text-xs text-muted-foreground">
       <FileText aria-hidden="true" class="size-3.5 shrink-0" strokeWidth={1.75} />
@@ -206,7 +268,7 @@
   {#if documentSource}
     <section class="min-h-0 overflow-auto bg-card" aria-label={`Rendered ${documentName}`}>
       {#if errorMessage}
-        <p class="border-b border-border px-4 py-2 text-sm text-destructive" role="alert">
+        <p class="border-b border-border px-8 py-2 text-sm text-destructive" role="alert">
           {errorMessage}
         </p>
       {/if}

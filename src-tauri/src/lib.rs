@@ -62,17 +62,37 @@ fn deliver_open_request(app: &tauri::AppHandle, request: OpenRequest) {
 #[serde(rename_all = "camelCase")]
 struct OpenedDocument {
     path: String,
-    content: String,
+    html: String,
 }
 
 #[tauri::command]
-async fn open_document(path: String) -> Result<OpenedDocument, String> {
+async fn open_document(app: tauri::AppHandle, path: String) -> Result<OpenedDocument, String> {
+    use tauri::Manager;
+
     let document = markive_core::open_document(&path)
         .map_err(|error| format!("Unable to read {path}: {error}"))?;
 
+    // Canonicalize so relative launch paths (`markive notes.md`) get a
+    // real base directory for image resolution.
+    let canonical = std::fs::canonicalize(document.path())
+        .map_err(|error| format!("Unable to resolve {path}: {error}"))?;
+    let base_dir = canonical
+        .parent()
+        .ok_or_else(|| format!("{path} has no parent directory"))?;
+
+    let rendered = markive_core::render_document(document.content(), base_dir);
+
+    // Grant the asset protocol access to exactly the images this
+    // document references. A failed grant leaves that image broken in
+    // the view; it should not fail opening the document.
+    let scope = app.asset_protocol_scope();
+    for image in rendered.local_images() {
+        let _ = scope.allow_file(image);
+    }
+
     Ok(OpenedDocument {
-        path: document.path().to_string_lossy().into_owned(),
-        content: document.content().to_owned(),
+        path: canonical.to_string_lossy().into_owned(),
+        html: rendered.html().to_owned(),
     })
 }
 
