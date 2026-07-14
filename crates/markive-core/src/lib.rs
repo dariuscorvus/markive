@@ -59,6 +59,61 @@ pub fn open_document(path: impl AsRef<Path>) -> io::Result<Document> {
     })
 }
 
+/// Saves `content` to `path` without risking the original: the content
+/// goes to a temporary file in the same directory, is flushed to disk,
+/// and atomically renamed over the original. A failure at any step
+/// leaves the original file unchanged.
+///
+/// # Errors
+///
+/// Returns an error when the target is read-only, the directory is not
+/// writable, or any write, flush, or rename fails.
+pub fn save_document(path: &Path, content: &str) -> io::Result<()> {
+    let original = fs::metadata(path);
+
+    // rename() replaces a read-only file when the directory is
+    // writable; refusing here keeps the read-only bit meaningful.
+    if let Ok(metadata) = &original
+        && metadata.permissions().readonly()
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("{} is read-only", path.display()),
+        ));
+    }
+
+    let directory = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no directory"))?;
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no file name"))?;
+    let temp = directory.join(format!(
+        ".{}.markive-{}.tmp",
+        file_name.to_string_lossy(),
+        std::process::id()
+    ));
+
+    let result = (|| {
+        let mut file = fs::File::create(&temp)?;
+        io::Write::write_all(&mut file, content.as_bytes())?;
+        file.sync_all()?;
+        // The rename keeps the temp file's permissions, not the
+        // original's; carry them over.
+        if let Ok(metadata) = &original {
+            fs::set_permissions(&temp, metadata.permissions())?;
+        }
+        fs::rename(&temp, path)
+    })();
+
+    if result.is_err() {
+        let _ = fs::remove_file(&temp);
+    }
+
+    result
+}
+
 /// A document rendered against a filesystem base directory.
 #[derive(Debug, Eq, PartialEq)]
 pub struct RenderedDocument {
@@ -333,6 +388,57 @@ mod tests {
         assert!(html.contains("<table>"));
         assert!(html.contains("type=\"checkbox\""));
         assert!(html.contains("checked"));
+    }
+
+    #[test]
+    fn save_round_trips_bytes_exactly() {
+        let path = std::env::temp_dir().join(format!("markive-save-{}.md", process::id()));
+        let content = "# Ünïcode 🎉\r\nCRLF line\r\n\nLF line\n";
+
+        save_document(&path, content).expect("save document");
+
+        assert_eq!(fs::read(&path).expect("read saved file"), content.as_bytes());
+        fs::remove_file(&path).expect("remove test file");
+    }
+
+    #[test]
+    fn save_replaces_existing_content() {
+        let path = std::env::temp_dir().join(format!("markive-save-replace-{}.md", process::id()));
+        fs::write(&path, "old").expect("write original");
+
+        save_document(&path, "new").expect("save document");
+
+        assert_eq!(fs::read_to_string(&path).expect("read"), "new");
+        fs::remove_file(&path).expect("remove test file");
+    }
+
+    #[test]
+    fn save_refuses_read_only_files_and_keeps_them_unchanged() {
+        let path = std::env::temp_dir().join(format!("markive-save-ro-{}.md", process::id()));
+        fs::write(&path, "protected").expect("write original");
+        let mut permissions = fs::metadata(&path).expect("metadata").permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&path, permissions.clone()).expect("set read-only");
+
+        let error = save_document(&path, "overwrite").expect_err("refuse read-only file");
+
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(fs::read_to_string(&path).expect("read"), "protected");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o644))
+                .expect("restore permissions");
+        }
+        fs::remove_file(&path).expect("remove test file");
+    }
+
+    #[test]
+    fn save_into_a_missing_directory_fails_cleanly() {
+        let path = Path::new("/nonexistent-markive-dir/note.md");
+
+        assert!(save_document(path, "content").is_err());
     }
 
     #[test]

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { ClipboardPaste, Code, Columns2, Eye, FileText, FolderOpen } from "@lucide/svelte";
+  import { ClipboardPaste, Code, Columns2, Eye, FileText, FolderOpen, Save } from "@lucide/svelte";
   import { convertFileSrc, invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -140,6 +140,17 @@
     documentSource = { kind: "file", path };
     savedText = sourceText;
     return true;
+  }
+
+  async function saveAction() {
+    if (!documentSource) return;
+
+    errorMessage = null;
+    try {
+      await saveCurrentDocument();
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : String(error);
+    }
   }
 
   // Gate for every action that replaces or closes the document.
@@ -439,6 +450,12 @@
 
     const key = event.key.toLowerCase();
 
+    if (key === "s" && documentSource) {
+      event.preventDefault();
+      void saveAction();
+      return;
+    }
+
     if (key === "e" && documentSource) {
       event.preventDefault();
       cycleViewMode();
@@ -515,6 +532,10 @@
             Split
           </Button>
         </div>
+        <Button variant="ghost" size="sm" onclick={saveAction} disabled={!isDirty}>
+          <Save data-icon="inline-start" aria-hidden="true" />
+          Save
+        </Button>
         <Button variant="ghost" size="sm" onclick={pasteClipboard} disabled={isPasting}>
           <ClipboardPaste data-icon="inline-start" aria-hidden="true" />
           Paste
