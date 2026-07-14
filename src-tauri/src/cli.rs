@@ -12,6 +12,8 @@ Markive — Markdown viewer
 
 Usage:
   markive [path]           Open a Markdown file in the app
+  markive -                Open piped stdin in the app
+                           (piped stdin is also detected without the -)
   markive render [path]    Render Markdown to sanitized HTML on stdout
                            (reads stdin when no path is given)
 
@@ -25,6 +27,11 @@ Options:
 pub enum Command {
     /// Launch the app, optionally opening a document.
     Gui { path: Option<String> },
+    /// `markive -`: show stdin in the app even at a terminal.
+    GuiStdin,
+    /// Internal, produced by the detach re-exec: open a temporary file
+    /// holding piped stdin.
+    GuiStdinFile { file: String },
     /// Render a file (or stdin) to HTML on stdout without a window.
     Render { path: Option<String> },
     /// Print usage.
@@ -45,6 +52,10 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
 
     match args.first().map(|arg| arg.as_str()) {
         None => Ok(Command::Gui { path: None }),
+        Some("-") => Ok(Command::GuiStdin),
+        Some("--stdin-file") if args.len() == 2 => Ok(Command::GuiStdinFile {
+            file: args[1].clone(),
+        }),
         Some("-h" | "--help") => Ok(Command::Help),
         Some("-V" | "--version") => Ok(Command::Version),
         Some("render") => match args.len() {
@@ -85,6 +96,46 @@ pub fn render(path: Option<&str>) -> Result<String, String> {
     };
 
     Ok(markive_core::render_markdown(&markdown))
+}
+
+/// Validates a document path and makes it absolute so it stays correct
+/// across process boundaries — the detach re-exec and single-instance
+/// forwarding both run with a different working directory.
+///
+/// # Errors
+///
+/// Returns a message suitable for stderr when the path is missing, not
+/// a Markdown file, or cannot be resolved.
+pub fn absolute_document_path(path: &str) -> Result<String, String> {
+    validate_document_path(path)?;
+
+    std::fs::canonicalize(path)
+        .map(|absolute| absolute.to_string_lossy().into_owned())
+        .map_err(|error| format!("Unable to resolve {path}: {error}"))
+}
+
+/// Reads piped stdin into a temporary file the app opens and deletes.
+/// Returns `None` for empty input — a Finder launch reads /dev/null.
+///
+/// # Errors
+///
+/// Returns a message suitable for stderr when stdin is not valid UTF-8
+/// or the temporary file cannot be written.
+pub fn stash_stdin() -> Result<Option<String>, String> {
+    let mut content = String::new();
+    std::io::stdin()
+        .read_to_string(&mut content)
+        .map_err(|error| format!("Unable to read stdin: {error}"))?;
+
+    if content.trim().is_empty() {
+        return Ok(None);
+    }
+
+    let file = std::env::temp_dir().join(format!("markive-stdin-{}.md", std::process::id()));
+    std::fs::write(&file, content)
+        .map_err(|error| format!("Unable to stash stdin: {error}"))?;
+
+    Ok(Some(file.to_string_lossy().into_owned()))
 }
 
 /// Checks that `path` names an existing Markdown file before the GUI
@@ -136,6 +187,22 @@ mod tests {
             parse(&args(&["-psn_0_12345"])),
             Ok(Command::Gui { path: None })
         );
+    }
+
+    #[test]
+    fn a_dash_forces_stdin() {
+        assert_eq!(parse(&args(&["-"])), Ok(Command::GuiStdin));
+    }
+
+    #[test]
+    fn stdin_file_is_parsed_internally() {
+        assert_eq!(
+            parse(&args(&["--stdin-file", "/tmp/markive-stdin-1.md"])),
+            Ok(Command::GuiStdinFile {
+                file: "/tmp/markive-stdin-1.md".to_string()
+            })
+        );
+        assert!(parse(&args(&["--stdin-file"])).is_err());
     }
 
     #[test]
