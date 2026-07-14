@@ -118,6 +118,7 @@ fn deliver_open_request(app: &tauri::AppHandle, request: OpenRequest) {
 struct OpenedDocument {
     path: String,
     html: String,
+    content: String,
 }
 
 /// Grants the asset protocol access to exactly the images a rendered
@@ -151,6 +152,7 @@ async fn open_document(app: tauri::AppHandle, path: String) -> Result<OpenedDocu
     Ok(OpenedDocument {
         path: canonical.to_string_lossy().into_owned(),
         html: rendered.html().to_owned(),
+        content: document.content().to_owned(),
     })
 }
 
@@ -159,22 +161,35 @@ fn render_markdown(markdown: &str) -> String {
     markive_core::render_markdown(markdown)
 }
 
-/// Renders pasted Markdown that has no backing file: absolute image
-/// paths resolve, relative ones have no base directory and stay as
-/// written.
+/// Renders Markdown source held by the frontend — pasted text, piped
+/// stdin, or editor content. With a `base_dir` (the open document's
+/// directory) relative image and link targets resolve; without one,
+/// only absolute targets do.
 #[tauri::command]
-async fn render_clipboard(app: tauri::AppHandle, markdown: String) -> String {
-    let rendered = markive_core::render_document(&markdown, None);
+async fn render_source(
+    app: tauri::AppHandle,
+    markdown: String,
+    base_dir: Option<String>,
+) -> String {
+    let rendered =
+        markive_core::render_document(&markdown, base_dir.as_deref().map(std::path::Path::new));
     grant_image_access(&app, &rendered);
 
     rendered.html().to_owned()
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StdinDocument {
+    html: String,
+    content: String,
 }
 
 /// Renders piped stdin that `main` parked in a temporary file, deleting
 /// the file after reading. Rendered like clipboard text: no base
 /// directory, so only absolute image paths resolve.
 #[tauri::command]
-async fn open_stdin_document(app: tauri::AppHandle, path: String) -> Result<String, String> {
+async fn open_stdin_document(app: tauri::AppHandle, path: String) -> Result<StdinDocument, String> {
     let content = std::fs::read_to_string(&path)
         .map_err(|error| format!("Unable to read piped input: {error}"))?;
     let _ = std::fs::remove_file(&path);
@@ -182,7 +197,10 @@ async fn open_stdin_document(app: tauri::AppHandle, path: String) -> Result<Stri
     let rendered = markive_core::render_document(&content, None);
     grant_image_access(&app, &rendered);
 
-    Ok(rendered.html().to_owned())
+    Ok(StdinDocument {
+        html: rendered.html().to_owned(),
+        content,
+    })
 }
 
 fn read_clipboard_files() -> Result<Vec<String>, String> {
@@ -338,7 +356,7 @@ pub fn run(launch: Launch) {
             open_document,
             open_stdin_document,
             render_markdown,
-            render_clipboard,
+            render_source,
             clipboard_files,
             launch_document
         ])
