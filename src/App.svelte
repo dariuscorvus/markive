@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { ClipboardPaste, FileText, FolderOpen } from "@lucide/svelte";
+  import { ClipboardPaste, Code, Eye, FileText, FolderOpen } from "@lucide/svelte";
   import { convertFileSrc, invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -9,10 +9,17 @@
   import { openUrl } from "@tauri-apps/plugin-opener";
 
   import { Button } from "$lib/components/ui/button";
+  import Editor from "$lib/components/Editor.svelte";
 
   type OpenedDocument = {
     path: string;
     html: string;
+    content: string;
+  };
+
+  type StdinDocument = {
+    html: string;
+    content: string;
   };
 
   type DocumentSource =
@@ -26,10 +33,20 @@
 
   let documentSource = $state<DocumentSource | null>(null);
   let renderedHtml = $state("");
+  let sourceText = $state("");
+  let viewMode = $state<"rendered" | "source">("rendered");
   let errorMessage = $state<string | null>(null);
   let isOpening = $state(false);
   let isPasting = $state(false);
   let isDragOver = $state(false);
+
+  // The open document's directory; relative image and link targets in
+  // edited source resolve against it.
+  let baseDir = $derived(
+    documentSource?.kind === "file"
+      ? (documentSource.path.slice(0, documentSource.path.lastIndexOf("/")) ?? null)
+      : null,
+  );
 
   let documentName = $derived(
     documentSource?.kind === "file"
@@ -84,6 +101,31 @@
 
     documentSource = { kind: "file", path: document.path };
     renderedHtml = convertLocalImageSources(document.html);
+    sourceText = document.content;
+    viewMode = "rendered";
+  }
+
+  function handleEdit(value: string) {
+    sourceText = value;
+  }
+
+  async function toggleViewMode() {
+    if (viewMode === "rendered") {
+      viewMode = "source";
+      return;
+    }
+
+    // Back to rendered: re-render the possibly edited source.
+    try {
+      const html = await invoke<string>("render_source", {
+        markdown: sourceText,
+        baseDir,
+      });
+      renderedHtml = convertLocalImageSources(html);
+      viewMode = "rendered";
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : String(error);
+    }
   }
 
   async function openFile() {
@@ -148,12 +190,15 @@
         return;
       }
 
-      const html = await invoke<string>("render_clipboard", {
+      const html = await invoke<string>("render_source", {
         markdown: clipboardText,
+        baseDir: null,
       });
 
       documentSource = { kind: "clipboard" };
       renderedHtml = convertLocalImageSources(html);
+      sourceText = clipboardText;
+      viewMode = "rendered";
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : String(error);
     } finally {
@@ -170,11 +215,13 @@
       } else if (request.path) {
         await openDocumentAtPath(request.path);
       } else if (request.stdinPath) {
-        const html = await invoke<string>("open_stdin_document", {
+        const stdinDocument = await invoke<StdinDocument>("open_stdin_document", {
           path: request.stdinPath,
         });
         documentSource = { kind: "stdin" };
-        renderedHtml = convertLocalImageSources(html);
+        renderedHtml = convertLocalImageSources(stdinDocument.html);
+        sourceText = stdinDocument.content;
+        viewMode = "rendered";
       }
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : String(error);
@@ -294,12 +341,22 @@
 
     const key = event.key.toLowerCase();
 
+    if (key === "e" && documentSource) {
+      event.preventDefault();
+      void toggleViewMode();
+      return;
+    }
+
+    // Inside the editor, ⌘V pastes text and ⌘O is the only global
+    // shortcut that still applies.
+    const inEditor = (event.target as Element).closest(".cm-editor") !== null;
+
     if (key === "o") {
       event.preventDefault();
       void openFile();
     }
 
-    if (key === "v") {
+    if (key === "v" && !inEditor) {
       event.preventDefault();
       void pasteClipboard();
     }
@@ -322,6 +379,15 @@
     </div>
     {#if documentSource}
       <div class="flex items-center gap-1">
+        <Button variant="ghost" size="sm" onclick={toggleViewMode}>
+          {#if viewMode === "rendered"}
+            <Code data-icon="inline-start" aria-hidden="true" />
+            Source
+          {:else}
+            <Eye data-icon="inline-start" aria-hidden="true" />
+            Rendered
+          {/if}
+        </Button>
         <Button variant="ghost" size="sm" onclick={pasteClipboard} disabled={isPasting}>
           <ClipboardPaste data-icon="inline-start" aria-hidden="true" />
           Paste
@@ -335,16 +401,29 @@
   </header>
 
   {#if documentSource}
-    <section class="min-h-0 overflow-auto bg-card" aria-label={`Rendered ${documentName}`}>
-      {#if errorMessage}
-        <p class="border-b border-border px-8 py-2 text-sm text-destructive" role="alert">
-          {errorMessage}
-        </p>
-      {/if}
-      <article class="markdown mx-auto w-full max-w-[46rem] px-8 py-14">
-        {@html renderedHtml}
-      </article>
-    </section>
+    {#if viewMode === "source"}
+      <section class="grid min-h-0 grid-rows-[auto_1fr] bg-card" aria-label={`Source of ${documentName}`}>
+        {#if errorMessage}
+          <p class="border-b border-border px-8 py-2 text-sm text-destructive" role="alert">
+            {errorMessage}
+          </p>
+        {:else}
+          <div></div>
+        {/if}
+        <Editor value={sourceText} onchange={handleEdit} />
+      </section>
+    {:else}
+      <section class="min-h-0 overflow-auto bg-card" aria-label={`Rendered ${documentName}`}>
+        {#if errorMessage}
+          <p class="border-b border-border px-8 py-2 text-sm text-destructive" role="alert">
+            {errorMessage}
+          </p>
+        {/if}
+        <article class="markdown mx-auto w-full max-w-[46rem] px-8 py-14">
+          {@html renderedHtml}
+        </article>
+      </section>
+    {/if}
   {:else}
     <section class="grid place-items-center px-6">
       <div class="max-w-sm text-center">
