@@ -14,9 +14,12 @@
     html: string;
   };
 
-  type DocumentSource = { kind: "file"; path: string } | { kind: "clipboard" };
+  type DocumentSource =
+    | { kind: "file"; path: string }
+    | { kind: "clipboard" }
+    | { kind: "stdin" };
 
-  type OpenRequest = { path: string | null; error: string | null };
+  type OpenRequest = { path: string | null; stdinPath: string | null; error: string | null };
 
   const MARKDOWN_EXTENSIONS = ["md", "markdown", "mdown", "mkd"];
 
@@ -32,14 +35,18 @@
       ? (documentSource.path.split(/[\\/]/).pop() ?? "Markive")
       : documentSource?.kind === "clipboard"
         ? "Clipboard"
-        : "Markive",
+        : documentSource?.kind === "stdin"
+          ? "stdin"
+          : "Markive",
   );
   let sourceLabel = $derived(
     documentSource?.kind === "file"
       ? documentSource.path
       : documentSource?.kind === "clipboard"
         ? "Clipboard"
-        : "No file open",
+        : documentSource?.kind === "stdin"
+          ? "Piped from stdin"
+          : "No file open",
   );
 
   function fileName(path: string): string {
@@ -161,6 +168,12 @@
         errorMessage = request.error;
       } else if (request.path) {
         await openDocumentAtPath(request.path);
+      } else if (request.stdinPath) {
+        const html = await invoke<string>("open_stdin_document", {
+          path: request.stdinPath,
+        });
+        documentSource = { kind: "stdin" };
+        renderedHtml = convertLocalImageSources(html);
       }
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : String(error);

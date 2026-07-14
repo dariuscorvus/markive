@@ -4,12 +4,68 @@ pub mod cli;
 
 use std::sync::Mutex;
 
+/// What the process was asked to show at startup.
+pub enum Launch {
+    /// An empty window.
+    Window,
+    /// A validated, absolute document path.
+    Document(String),
+    /// A temporary file holding piped stdin, deleted after reading.
+    StdinFile(String),
+}
+
 /// A document open request delivered to the frontend: at startup through
 /// the `launch_document` command, afterwards as an `open-document` event.
 #[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 struct OpenRequest {
     path: Option<String>,
+    stdin_path: Option<String>,
     error: Option<String>,
+}
+
+impl OpenRequest {
+    fn from_launch(launch: Launch) -> Option<Self> {
+        match launch {
+            Launch::Window => None,
+            Launch::Document(path) => Some(Self {
+                path: Some(path),
+                stdin_path: None,
+                error: None,
+            }),
+            Launch::StdinFile(file) => Some(Self {
+                path: None,
+                stdin_path: Some(file),
+                error: None,
+            }),
+        }
+    }
+
+    /// Interprets the arguments a second instance was started with —
+    /// the same protocol `main` produces: nothing, one absolute path,
+    /// or `--stdin-file <path>`.
+    fn from_forwarded_args(args: &[String]) -> Option<Self> {
+        match args {
+            [flag, file] if flag == "--stdin-file" => Some(Self {
+                path: None,
+                stdin_path: Some(file.clone()),
+                error: None,
+            }),
+            [path] => Some(match cli::validate_document_path(path) {
+                Ok(()) => Self {
+                    path: Some(path.clone()),
+                    stdin_path: None,
+                    error: None,
+                },
+                Err(error) => Self {
+                    path: None,
+                    stdin_path: None,
+                    error: Some(error),
+                },
+            }),
+            _ => None,
+        }
+    }
 }
 
 /// Holds open requests that arrive before the frontend is ready — the
@@ -41,7 +97,6 @@ fn document_path_from_url(url: &tauri::Url) -> Result<String, String> {
 
 /// Hands an open request to the frontend, or stores it for the startup
 /// `launch_document` fetch when the frontend has not loaded yet.
-#[cfg(target_os = "macos")]
 fn deliver_open_request(app: &tauri::AppHandle, request: OpenRequest) {
     use tauri::{Emitter, Manager};
 
@@ -113,6 +168,21 @@ async fn render_clipboard(app: tauri::AppHandle, markdown: String) -> String {
     grant_image_access(&app, &rendered);
 
     rendered.html().to_owned()
+}
+
+/// Renders piped stdin that `main` parked in a temporary file, deleting
+/// the file after reading. Rendered like clipboard text: no base
+/// directory, so only absolute image paths resolve.
+#[tauri::command]
+async fn open_stdin_document(app: tauri::AppHandle, path: String) -> Result<String, String> {
+    let content = std::fs::read_to_string(&path)
+        .map_err(|error| format!("Unable to read piped input: {error}"))?;
+    let _ = std::fs::remove_file(&path);
+
+    let rendered = markive_core::render_document(&content, None);
+    grant_image_access(&app, &rendered);
+
+    Ok(rendered.html().to_owned())
 }
 
 fn read_clipboard_files() -> Result<Vec<String>, String> {
@@ -219,19 +289,29 @@ mod tests {
 /// # Panics
 ///
 /// Panics when the Tauri runtime cannot initialize or exits with an error.
-pub fn run(launch_path: Option<String>) {
+pub fn run(launch: Launch) {
     let app = tauri::Builder::default()
+        // Registered first so a second instance forwards its arguments
+        // and exits before any other initialization runs.
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            use tauri::Manager;
+
+            if let Some(request) = OpenRequest::from_forwarded_args(&argv[1..]) {
+                deliver_open_request(app, request);
+            }
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(Mutex::new(LaunchState {
-            pending: launch_path.map(|path| OpenRequest {
-                path: Some(path),
-                error: None,
-            }),
+            pending: OpenRequest::from_launch(launch),
             frontend_ready: false,
         }))
         .invoke_handler(tauri::generate_handler![
             open_document,
+            open_stdin_document,
             render_markdown,
             render_clipboard,
             clipboard_files,
@@ -247,10 +327,12 @@ pub fn run(launch_path: Option<String>) {
                 let request = match document_path_from_url(url) {
                     Ok(path) => OpenRequest {
                         path: Some(path),
+                        stdin_path: None,
                         error: None,
                     },
                     Err(error) => OpenRequest {
                         path: None,
+                        stdin_path: None,
                         error: Some(error),
                     },
                 };
