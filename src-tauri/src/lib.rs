@@ -203,11 +203,11 @@ async fn open_stdin_document(app: tauri::AppHandle, path: String) -> Result<Stdi
     })
 }
 
-/// Writes document content to a path. Plain write for now; #10 makes
-/// it atomic.
+/// Saves document content through markive-core's atomic write.
 #[tauri::command]
 async fn save_file(path: String, content: String) -> Result<(), String> {
-    std::fs::write(&path, content).map_err(|error| format!("Unable to save {path}: {error}"))
+    markive_core::save_document(std::path::Path::new(&path), &content)
+        .map_err(|error| format!("Unable to save {path}: {error}"))
 }
 
 fn read_clipboard_files() -> Result<Vec<String>, String> {
