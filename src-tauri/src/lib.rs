@@ -306,6 +306,30 @@ pub fn run(launch: Launch) {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .setup(|app| {
+            // The main window is created here instead of by the config
+            // (`create: false`) to attach the navigation policy: the
+            // webview may only load the app itself. External links open
+            // in the default browser; a click that slips past the
+            // frontend interception must not replace the app.
+            let config = app
+                .config()
+                .app
+                .windows
+                .first()
+                .expect("main window config missing")
+                .clone();
+            tauri::WebviewWindowBuilder::from_config(app, &config)?
+                .on_navigation(|url| match url.scheme() {
+                    "tauri" => true,
+                    "http" | "https" if cfg!(debug_assertions) => {
+                        url.host_str() == Some("localhost") || url.host_str() == Some("127.0.0.1")
+                    }
+                    _ => false,
+                })
+                .build()?;
+            Ok(())
+        })
         .manage(Mutex::new(LaunchState {
             pending: OpenRequest::from_launch(launch),
             frontend_ready: false,

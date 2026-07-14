@@ -235,18 +235,26 @@
   })();
 
   // The webview must never navigate: every link click is intercepted
-  // and routed by target type.
+  // and routed by target type. Registered on window in the capture
+  // phase to run before Tauri's own document-level click handling,
+  // which otherwise navigates the webview.
   function handleLinkClick(event: MouseEvent) {
     const anchor = (event.target as Element).closest("a");
     if (!anchor) return;
 
     event.preventDefault();
+    event.stopImmediatePropagation();
 
     const href = anchor.getAttribute("href");
     if (!href) return;
 
     void openLink(href);
   }
+
+  onMount(() => {
+    window.addEventListener("click", handleLinkClick, { capture: true });
+    return () => window.removeEventListener("click", handleLinkClick, { capture: true });
+  });
 
   async function openLink(href: string) {
     errorMessage = null;
@@ -333,10 +341,7 @@
           {errorMessage}
         </p>
       {/if}
-      <!-- Delegated handler for rendered links; the links themselves are
-           the interactive elements and stay keyboard-operable. -->
-      <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
-      <article class="markdown mx-auto w-full max-w-[46rem] px-8 py-14" onclick={handleLinkClick}>
+      <article class="markdown mx-auto w-full max-w-[46rem] px-8 py-14">
         {@html renderedHtml}
       </article>
     </section>
