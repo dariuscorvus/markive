@@ -13,6 +13,8 @@
 
   type DocumentSource = { kind: "file"; path: string } | { kind: "clipboard" };
 
+  const MARKDOWN_EXTENSIONS = ["md", "markdown", "mdown", "mkd"];
+
   let documentSource = $state<DocumentSource | null>(null);
   let renderedHtml = $state("");
   let errorMessage = $state<string | null>(null);
@@ -34,6 +36,25 @@
         : "No file open",
   );
 
+  function fileName(path: string): string {
+    return path.split(/[\\/]/).pop() ?? path;
+  }
+
+  function isMarkdownPath(path: string): boolean {
+    const extension = fileName(path).split(".").pop()?.toLowerCase() ?? "";
+    return MARKDOWN_EXTENSIONS.includes(extension);
+  }
+
+  async function openDocumentAtPath(path: string) {
+    const document = await invoke<OpenedDocument>("open_document", { path });
+    const html = await invoke<string>("render_markdown", {
+      markdown: document.content,
+    });
+
+    documentSource = { kind: "file", path: document.path };
+    renderedHtml = html;
+  }
+
   async function openFile() {
     if (isOpening) return;
 
@@ -48,22 +69,14 @@
         filters: [
           {
             name: "Markdown",
-            extensions: ["md", "markdown", "mdown", "mkd"],
+            extensions: MARKDOWN_EXTENSIONS,
           },
         ],
       });
 
       if (!selectedPath) return;
 
-      const document = await invoke<OpenedDocument>("open_document", {
-        path: selectedPath,
-      });
-      const html = await invoke<string>("render_markdown", {
-        markdown: document.content,
-      });
-
-      documentSource = { kind: "file", path: document.path };
-      renderedHtml = html;
+      await openDocumentAtPath(selectedPath);
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : String(error);
     } finally {
@@ -78,6 +91,25 @@
     errorMessage = null;
 
     try {
+      const copiedFiles = await invoke<string[]>("clipboard_files");
+
+      if (copiedFiles.length > 1) {
+        errorMessage = "The clipboard contains multiple files. Copy one Markdown file.";
+        return;
+      }
+
+      if (copiedFiles.length === 1) {
+        const copiedPath = copiedFiles[0];
+
+        if (!isMarkdownPath(copiedPath)) {
+          errorMessage = `${fileName(copiedPath)} is not a Markdown file.`;
+          return;
+        }
+
+        await openDocumentAtPath(copiedPath);
+        return;
+      }
+
       const clipboardText = await readText();
 
       if (clipboardText.length === 0) {
@@ -97,6 +129,16 @@
       isPasting = false;
     }
   }
+
+  // Open a document passed on the command line (`markive path.md`).
+  void (async () => {
+    try {
+      const launchPath = await invoke<string | null>("launch_document");
+      if (launchPath) await openDocumentAtPath(launchPath);
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : String(error);
+    }
+  })();
 
   function handleKeydown(event: KeyboardEvent) {
     if (!(event.metaKey || event.ctrlKey)) return;
