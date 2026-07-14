@@ -1,5 +1,17 @@
 #![forbid(unsafe_code)]
 
+pub mod cli;
+
+/// Document path passed on the command line, held until the frontend
+/// asks for it at startup.
+struct LaunchDocument(Option<String>);
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn launch_document(state: tauri::State<'_, LaunchDocument>) -> Option<String> {
+    state.0.clone()
+}
+
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct OpenedDocument {
@@ -80,20 +92,22 @@ mod tests {
     }
 }
 
-/// Starts the Markive desktop application.
+/// Starts the Markive desktop application, opening `launch_path` when
+/// one was given on the command line.
 ///
 /// # Panics
 ///
 /// Panics when the Tauri runtime cannot initialize or exits with an error.
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
+pub fn run(launch_path: Option<String>) {
     tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
+        .manage(LaunchDocument(launch_path))
         .invoke_handler(tauri::generate_handler![
             open_document,
             render_markdown,
-            clipboard_files
+            clipboard_files,
+            launch_document
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Markive");

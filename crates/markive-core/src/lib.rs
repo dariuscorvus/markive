@@ -1,11 +1,27 @@
 #![forbid(unsafe_code)]
 
+use std::ffi::OsStr;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
 use ammonia::Builder;
 use pulldown_cmark::{Options, Parser};
+
+/// File extensions Markive treats as Markdown documents.
+pub const MARKDOWN_EXTENSIONS: [&str; 4] = ["md", "markdown", "mdown", "mkd"];
+
+/// Returns true when the path has a Markdown file extension.
+#[must_use]
+pub fn is_markdown_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(OsStr::to_str)
+        .is_some_and(|extension| {
+            MARKDOWN_EXTENSIONS
+                .iter()
+                .any(|known| extension.eq_ignore_ascii_case(known))
+        })
+}
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct Document {
@@ -76,6 +92,16 @@ mod tests {
         assert_eq!(document.content(), content);
 
         fs::remove_file(path).expect("remove test document");
+    }
+
+    #[test]
+    fn recognizes_markdown_extensions_case_insensitively() {
+        assert!(is_markdown_path(Path::new("/notes/todo.md")));
+        assert!(is_markdown_path(Path::new("README.MD")));
+        assert!(is_markdown_path(Path::new("doc.Markdown")));
+        assert!(!is_markdown_path(Path::new("archive.md.zip")));
+        assert!(!is_markdown_path(Path::new("plain.txt")));
+        assert!(!is_markdown_path(Path::new("no-extension")));
     }
 
     #[test]

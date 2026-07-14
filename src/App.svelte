@@ -130,6 +130,16 @@
     }
   }
 
+  // Open a document passed on the command line (`markive path.md`).
+  void (async () => {
+    try {
+      const launchPath = await invoke<string | null>("launch_document");
+      if (launchPath) await openDocumentAtPath(launchPath);
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : String(error);
+    }
+  })();
+
   function handleKeydown(event: KeyboardEvent) {
     if (!(event.metaKey || event.ctrlKey)) return;
 
