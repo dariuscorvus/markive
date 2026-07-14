@@ -13,7 +13,7 @@ tauri-build = { version = "2.6.3", features = [] }
 
 [dependencies]
 markive-core = { path = "../crates/markive-core" }
-tauri = { version = "2.11.5", features = [] }
+tauri = { version = "2.11.5", features = ["protocol-asset"] }
 tauri-plugin-clipboard-manager = "2.3.2"
 tauri-plugin-dialog = "2.7.1"
 serde = { version = "1.0.228", features = ["derive"] }
