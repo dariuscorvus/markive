@@ -2,14 +2,60 @@
 
 pub mod cli;
 
-/// Document path passed on the command line, held until the frontend
-/// asks for it at startup.
-struct LaunchDocument(Option<String>);
+use std::sync::Mutex;
+
+/// A document open request delivered to the frontend: at startup through
+/// the `launch_document` command, afterwards as an `open-document` event.
+#[derive(Clone, serde::Serialize)]
+struct OpenRequest {
+    path: Option<String>,
+    error: Option<String>,
+}
+
+/// Holds open requests that arrive before the frontend is ready — the
+/// command-line path and macOS open-file events during a cold launch.
+struct LaunchState {
+    pending: Option<OpenRequest>,
+    frontend_ready: bool,
+}
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-fn launch_document(state: tauri::State<'_, LaunchDocument>) -> Option<String> {
-    state.0.clone()
+fn launch_document(state: tauri::State<'_, Mutex<LaunchState>>) -> Option<OpenRequest> {
+    let mut state = state.lock().expect("launch state lock poisoned");
+    state.frontend_ready = true;
+    state.pending.take()
+}
+
+/// Converts a URL from a macOS open-file event into a validated
+/// Markdown document path.
+#[cfg(target_os = "macos")]
+fn document_path_from_url(url: &tauri::Url) -> Result<String, String> {
+    let path = url
+        .to_file_path()
+        .map_err(|()| format!("{url} is not a file path"))?;
+    let path = path.to_string_lossy().into_owned();
+    cli::validate_document_path(&path)?;
+    Ok(path)
+}
+
+/// Hands an open request to the frontend, or stores it for the startup
+/// `launch_document` fetch when the frontend has not loaded yet.
+#[cfg(target_os = "macos")]
+fn deliver_open_request(app: &tauri::AppHandle, request: OpenRequest) {
+    use tauri::{Emitter, Manager};
+
+    let state = app.state::<Mutex<LaunchState>>();
+    let mut state = state.lock().expect("launch state lock poisoned");
+
+    if state.frontend_ready {
+        drop(state);
+        if let Err(error) = app.emit("open-document", request) {
+            eprintln!("markive: failed to deliver open-document event: {error}");
+        }
+    } else {
+        state.pending = Some(request);
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -110,6 +156,47 @@ mod tests {
 
         std::fs::remove_file(&path).expect("remove test document");
     }
+
+    #[test]
+    fn file_url_to_markdown_path() {
+        let path = std::env::temp_dir().join(format!("markive-open-{}.md", std::process::id()));
+        std::fs::write(&path, "# Opened\n").expect("write test document");
+
+        let url = tauri::Url::from_file_path(&path).expect("build file URL");
+        let converted = document_path_from_url(&url).expect("convert URL");
+        assert_eq!(
+            std::fs::canonicalize(&converted).expect("canonicalize converted path"),
+            std::fs::canonicalize(&path).expect("canonicalize test path"),
+        );
+
+        std::fs::remove_file(&path).expect("remove test document");
+    }
+
+    #[test]
+    fn non_markdown_file_url_is_rejected() {
+        let path = std::env::temp_dir().join(format!("markive-open-{}.txt", std::process::id()));
+        std::fs::write(&path, "plain text\n").expect("write test document");
+
+        let url = tauri::Url::from_file_path(&path).expect("build file URL");
+        let error = document_path_from_url(&url).expect_err("reject non-Markdown file");
+        assert!(error.contains("not a Markdown file"), "unexpected error: {error}");
+
+        std::fs::remove_file(&path).expect("remove test document");
+    }
+
+    #[test]
+    fn missing_file_url_is_rejected() {
+        let url = tauri::Url::from_file_path("/nonexistent/markive-missing.md")
+            .expect("build file URL");
+        assert!(document_path_from_url(&url).is_err());
+    }
+
+    #[test]
+    fn non_file_url_is_rejected() {
+        let url: tauri::Url = "https://example.com/notes.md".parse().expect("parse URL");
+        let error = document_path_from_url(&url).expect_err("reject non-file URL");
+        assert!(error.contains("not a file path"), "unexpected error: {error}");
+    }
 }
 
 /// Starts the Markive desktop application, opening `launch_path` when
@@ -119,16 +206,44 @@ mod tests {
 ///
 /// Panics when the Tauri runtime cannot initialize or exits with an error.
 pub fn run(launch_path: Option<String>) {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
-        .manage(LaunchDocument(launch_path))
+        .manage(Mutex::new(LaunchState {
+            pending: launch_path.map(|path| OpenRequest {
+                path: Some(path),
+                error: None,
+            }),
+            frontend_ready: false,
+        }))
         .invoke_handler(tauri::generate_handler![
             open_document,
             render_markdown,
             clipboard_files,
             launch_document
         ])
-        .run(tauri::generate_context!())
-        .expect("failed to run Markive");
+        .build(tauri::generate_context!())
+        .expect("failed to build Markive");
+
+    app.run(|app, event| {
+        #[cfg(target_os = "macos")]
+        if let tauri::RunEvent::Opened { urls } = event {
+            for url in &urls {
+                let request = match document_path_from_url(url) {
+                    Ok(path) => OpenRequest {
+                        path: Some(path),
+                        error: None,
+                    },
+                    Err(error) => OpenRequest {
+                        path: None,
+                        error: Some(error),
+                    },
+                };
+                deliver_open_request(app, request);
+            }
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        let _ = (app, event);
+    });
 }

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { ClipboardPaste, FileText, FolderOpen } from "@lucide/svelte";
   import { invoke } from "@tauri-apps/api/core";
+  import { listen } from "@tauri-apps/api/event";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { onMount } from "svelte";
   import { readText } from "@tauri-apps/plugin-clipboard-manager";
@@ -14,6 +15,8 @@
   };
 
   type DocumentSource = { kind: "file"; path: string } | { kind: "clipboard" };
+
+  type OpenRequest = { path: string | null; error: string | null };
 
   const MARKDOWN_EXTENSIONS = ["md", "markdown", "mdown", "mkd"];
 
@@ -150,6 +153,19 @@
     }
   }
 
+  async function handleOpenRequest(request: OpenRequest) {
+    errorMessage = null;
+
+    try {
+      if (request.error) {
+        errorMessage = request.error;
+      } else if (request.path) {
+        await openDocumentAtPath(request.path);
+      }
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : String(error);
+    }
+  }
   async function openDroppedFiles(paths: string[]) {
     errorMessage = null;
 
@@ -196,8 +212,9 @@
   // Open a document passed on the command line (`markive path.md`).
   void (async () => {
     try {
-      const launchPath = await invoke<string | null>("launch_document");
-      if (launchPath) await openDocumentAtPath(launchPath);
+      await listen<OpenRequest>("open-document", (event) => void handleOpenRequest(event.payload));
+      const request = await invoke<OpenRequest | null>("launch_document");
+      if (request) await handleOpenRequest(request);
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : String(error);
     }
