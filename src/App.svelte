@@ -1,0 +1,176 @@
+<script lang="ts">
+  import { ClipboardPaste, FileText, FolderOpen } from "@lucide/svelte";
+  import { invoke } from "@tauri-apps/api/core";
+  import { readText } from "@tauri-apps/plugin-clipboard-manager";
+  import { open } from "@tauri-apps/plugin-dialog";
+
+  import { Button } from "$lib/components/ui/button";
+
+  type OpenedDocument = {
+    path: string;
+    content: string;
+  };
+
+  type DocumentSource = { kind: "file"; path: string } | { kind: "clipboard" };
+
+  let documentSource = $state<DocumentSource | null>(null);
+  let renderedHtml = $state("");
+  let errorMessage = $state<string | null>(null);
+  let isOpening = $state(false);
+  let isPasting = $state(false);
+
+  let documentName = $derived(
+    documentSource?.kind === "file"
+      ? (documentSource.path.split(/[\\/]/).pop() ?? "Markive")
+      : documentSource?.kind === "clipboard"
+        ? "Clipboard"
+        : "Markive",
+  );
+  let sourceLabel = $derived(
+    documentSource?.kind === "file"
+      ? documentSource.path
+      : documentSource?.kind === "clipboard"
+        ? "Clipboard"
+        : "No file open",
+  );
+
+  async function openFile() {
+    if (isOpening) return;
+
+    isOpening = true;
+    errorMessage = null;
+
+    try {
+      const selectedPath = await open({
+        title: "Open Markdown file",
+        multiple: false,
+        directory: false,
+        filters: [
+          {
+            name: "Markdown",
+            extensions: ["md", "markdown", "mdown", "mkd"],
+          },
+        ],
+      });
+
+      if (!selectedPath) return;
+
+      const document = await invoke<OpenedDocument>("open_document", {
+        path: selectedPath,
+      });
+      const html = await invoke<string>("render_markdown", {
+        markdown: document.content,
+      });
+
+      documentSource = { kind: "file", path: document.path };
+      renderedHtml = html;
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : String(error);
+    } finally {
+      isOpening = false;
+    }
+  }
+
+  async function pasteClipboard() {
+    if (isPasting) return;
+
+    isPasting = true;
+    errorMessage = null;
+
+    try {
+      const clipboardText = await readText();
+
+      if (clipboardText.length === 0) {
+        errorMessage = "The clipboard contains no text.";
+        return;
+      }
+
+      const html = await invoke<string>("render_markdown", {
+        markdown: clipboardText,
+      });
+
+      documentSource = { kind: "clipboard" };
+      renderedHtml = html;
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : String(error);
+    } finally {
+      isPasting = false;
+    }
+  }
+
+  function handleKeydown(event: KeyboardEvent) {
+    if (!(event.metaKey || event.ctrlKey)) return;
+
+    const key = event.key.toLowerCase();
+
+    if (key === "o") {
+      event.preventDefault();
+      void openFile();
+    }
+
+    if (key === "v") {
+      event.preventDefault();
+      void pasteClipboard();
+    }
+  }
+</script>
+
+<svelte:head>
+  <title>{documentName}</title>
+</svelte:head>
+
+<svelte:window onkeydown={handleKeydown} />
+
+<main class="grid min-h-screen grid-rows-[2.75rem_1fr] bg-background text-foreground">
+  <header class="path-rail flex items-center justify-between gap-4 border-b border-border px-4">
+    <div class="flex min-w-0 items-center gap-2 font-mono text-xs text-muted-foreground">
+      <FileText aria-hidden="true" class="size-3.5 shrink-0" strokeWidth={1.75} />
+      <span class="truncate">{sourceLabel}</span>
+    </div>
+    {#if documentSource}
+      <div class="flex items-center gap-1">
+        <Button variant="ghost" size="sm" onclick={pasteClipboard} disabled={isPasting}>
+          <ClipboardPaste data-icon="inline-start" aria-hidden="true" />
+          Paste
+        </Button>
+        <Button variant="ghost" size="sm" onclick={openFile} disabled={isOpening}>
+          <FolderOpen data-icon="inline-start" aria-hidden="true" />
+          Open
+        </Button>
+      </div>
+    {/if}
+  </header>
+
+  {#if documentSource}
+    <section class="min-h-0 overflow-auto bg-card" aria-label={`Rendered ${documentName}`}>
+      <article class="markdown mx-auto w-full max-w-[46rem] px-8 py-14">
+        {@html renderedHtml}
+      </article>
+    </section>
+  {:else}
+    <section class="grid place-items-center px-6">
+      <div class="max-w-sm text-center">
+        <p class="font-mono text-xs tracking-wide text-muted-foreground">MARKIVE</p>
+        <h1 class="mt-4 text-balance text-2xl font-medium tracking-tight">
+          Open a Markdown file.
+        </h1>
+        <p class="mt-2 text-pretty text-sm leading-6 text-muted-foreground">
+          Open a file from disk, or paste Markdown without creating one.
+        </p>
+        <div class="mt-6 flex justify-center gap-2">
+          <Button size="lg" onclick={openFile} disabled={isOpening}>
+            <FolderOpen data-icon="inline-start" aria-hidden="true" />
+            {isOpening ? "Opening…" : "Open file"}
+          </Button>
+          <Button variant="outline" size="lg" onclick={pasteClipboard} disabled={isPasting}>
+            <ClipboardPaste data-icon="inline-start" aria-hidden="true" />
+            {isPasting ? "Pasting…" : "Paste clipboard"}
+          </Button>
+        </div>
+        {#if errorMessage}
+          <p class="mt-4 text-sm text-destructive" role="alert">{errorMessage}</p>
+        {/if}
+      </div>
+    </section>
+  {/if}
+</main>
