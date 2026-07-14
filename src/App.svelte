@@ -1,6 +1,6 @@
 <script lang="ts">
   import { ClipboardPaste, FileText, FolderOpen } from "@lucide/svelte";
-  import { invoke } from "@tauri-apps/api/core";
+  import { convertFileSrc, invoke } from "@tauri-apps/api/core";
   import { readText } from "@tauri-apps/plugin-clipboard-manager";
   import { open } from "@tauri-apps/plugin-dialog";
 
@@ -8,7 +8,7 @@
 
   type OpenedDocument = {
     path: string;
-    content: string;
+    html: string;
   };
 
   type DocumentSource = { kind: "file"; path: string } | { kind: "clipboard" };
@@ -45,14 +45,31 @@
     return MARKDOWN_EXTENSIONS.includes(extension);
   }
 
+  // The backend resolves local image sources to absolute filesystem
+  // paths; the webview can only load them through the asset protocol.
+  function convertLocalImageSources(html: string): string {
+    const parsed = new DOMParser().parseFromString(html, "text/html");
+
+    for (const image of parsed.querySelectorAll("img")) {
+      const src = image.getAttribute("src");
+      if (!src?.startsWith("/")) continue;
+
+      try {
+        image.setAttribute("src", convertFileSrc(decodeURIComponent(src)));
+      } catch {
+        // Malformed percent-encoding: leave the source as-is; the
+        // image stays a broken reference with its alt text.
+      }
+    }
+
+    return parsed.body.innerHTML;
+  }
+
   async function openDocumentAtPath(path: string) {
     const document = await invoke<OpenedDocument>("open_document", { path });
-    const html = await invoke<string>("render_markdown", {
-      markdown: document.content,
-    });
 
     documentSource = { kind: "file", path: document.path };
-    renderedHtml = html;
+    renderedHtml = convertLocalImageSources(document.html);
   }
 
   async function openFile() {
