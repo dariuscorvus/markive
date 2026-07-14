@@ -140,12 +140,12 @@
         return;
       }
 
-      const html = await invoke<string>("render_markdown", {
+      const html = await invoke<string>("render_clipboard", {
         markdown: clipboardText,
       });
 
       documentSource = { kind: "clipboard" };
-      renderedHtml = html;
+      renderedHtml = convertLocalImageSources(html);
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : String(error);
     } finally {
