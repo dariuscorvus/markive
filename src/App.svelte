@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { ClipboardPaste, Code, Eye, FileText, FolderOpen } from "@lucide/svelte";
+  import { ClipboardPaste, Code, Columns2, Eye, FileText, FolderOpen } from "@lucide/svelte";
   import { convertFileSrc, invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -34,7 +34,7 @@
   let documentSource = $state<DocumentSource | null>(null);
   let renderedHtml = $state("");
   let sourceText = $state("");
-  let viewMode = $state<"rendered" | "source">("rendered");
+  let viewMode = $state<"rendered" | "source" | "split">("rendered");
   let errorMessage = $state<string | null>(null);
   let isOpening = $state(false);
   let isPasting = $state(false);
@@ -105,27 +105,48 @@
     viewMode = "rendered";
   }
 
-  function handleEdit(value: string) {
-    sourceText = value;
+  async function renderCurrentSource() {
+    const html = await invoke<string>("render_source", {
+      markdown: sourceText,
+      baseDir,
+    });
+    renderedHtml = convertLocalImageSources(html);
   }
 
-  async function toggleViewMode() {
-    if (viewMode === "rendered") {
-      viewMode = "source";
-      return;
-    }
+  // In Split mode edits re-render live, debounced so a keystroke burst
+  // renders once. Only the article HTML updates; the editor is never
+  // touched, so its selection survives.
+  let renderTimer: ReturnType<typeof setTimeout> | undefined;
 
-    // Back to rendered: re-render the possibly edited source.
-    try {
-      const html = await invoke<string>("render_source", {
-        markdown: sourceText,
-        baseDir,
+  function handleEdit(value: string) {
+    sourceText = value;
+
+    if (viewMode !== "split") return;
+
+    clearTimeout(renderTimer);
+    renderTimer = setTimeout(() => {
+      renderCurrentSource().catch((error: unknown) => {
+        errorMessage = error instanceof Error ? error.message : String(error);
       });
-      renderedHtml = convertLocalImageSources(html);
-      viewMode = "rendered";
+    }, 150);
+  }
+
+  async function setViewMode(mode: typeof viewMode) {
+    if (!documentSource) return;
+
+    try {
+      // Entering a mode that shows rendered output re-renders the
+      // possibly edited source first.
+      if (mode !== "source") await renderCurrentSource();
+      viewMode = mode;
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : String(error);
     }
+  }
+
+  function cycleViewMode() {
+    const order = ["rendered", "source", "split"] as const;
+    void setViewMode(order[(order.indexOf(viewMode) + 1) % order.length]);
   }
 
   async function openFile() {
@@ -343,7 +364,13 @@
 
     if (key === "e" && documentSource) {
       event.preventDefault();
-      void toggleViewMode();
+      cycleViewMode();
+      return;
+    }
+
+    if (documentSource && (key === "1" || key === "2" || key === "3")) {
+      event.preventDefault();
+      void setViewMode((["rendered", "source", "split"] as const)[Number(key) - 1]);
       return;
     }
 
@@ -379,15 +406,35 @@
     </div>
     {#if documentSource}
       <div class="flex items-center gap-1">
-        <Button variant="ghost" size="sm" onclick={toggleViewMode}>
-          {#if viewMode === "rendered"}
-            <Code data-icon="inline-start" aria-hidden="true" />
-            Source
-          {:else}
+        <div class="mr-2 flex items-center rounded-md border border-border p-0.5" role="group" aria-label="View mode">
+          <Button
+            variant={viewMode === "rendered" ? "secondary" : "ghost"}
+            size="sm"
+            aria-pressed={viewMode === "rendered"}
+            onclick={() => void setViewMode("rendered")}
+          >
             <Eye data-icon="inline-start" aria-hidden="true" />
             Rendered
-          {/if}
-        </Button>
+          </Button>
+          <Button
+            variant={viewMode === "source" ? "secondary" : "ghost"}
+            size="sm"
+            aria-pressed={viewMode === "source"}
+            onclick={() => void setViewMode("source")}
+          >
+            <Code data-icon="inline-start" aria-hidden="true" />
+            Source
+          </Button>
+          <Button
+            variant={viewMode === "split" ? "secondary" : "ghost"}
+            size="sm"
+            aria-pressed={viewMode === "split"}
+            onclick={() => void setViewMode("split")}
+          >
+            <Columns2 data-icon="inline-start" aria-hidden="true" />
+            Split
+          </Button>
+        </div>
         <Button variant="ghost" size="sm" onclick={pasteClipboard} disabled={isPasting}>
           <ClipboardPaste data-icon="inline-start" aria-hidden="true" />
           Paste
@@ -411,6 +458,26 @@
           <div></div>
         {/if}
         <Editor value={sourceText} onchange={handleEdit} />
+      </section>
+    {:else if viewMode === "split"}
+      <section class="grid min-h-0 grid-rows-[auto_1fr] bg-card" aria-label={`Split view of ${documentName}`}>
+        {#if errorMessage}
+          <p class="border-b border-border px-8 py-2 text-sm text-destructive" role="alert">
+            {errorMessage}
+          </p>
+        {:else}
+          <div></div>
+        {/if}
+        <div class="grid min-h-0 grid-cols-2">
+          <div class="min-h-0 border-r border-border">
+            <Editor value={sourceText} onchange={handleEdit} />
+          </div>
+          <div class="min-h-0 overflow-auto">
+            <article class="markdown mx-auto w-full max-w-[46rem] px-8 py-14">
+              {@html renderedHtml}
+            </article>
+          </div>
+        </div>
       </section>
     {:else}
       <section class="min-h-0 overflow-auto bg-card" aria-label={`Rendered ${documentName}`}>
