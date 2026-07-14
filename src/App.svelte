@@ -1,6 +1,8 @@
 <script lang="ts">
   import { ClipboardPaste, FileText, FolderOpen } from "@lucide/svelte";
-  import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+  import { invoke } from "@tauri-apps/api/core";
+  import { getCurrentWebview } from "@tauri-apps/api/webview";
+  import { onMount } from "svelte";
   import { readText } from "@tauri-apps/plugin-clipboard-manager";
   import { open } from "@tauri-apps/plugin-dialog";
 
@@ -20,6 +22,7 @@
   let errorMessage = $state<string | null>(null);
   let isOpening = $state(false);
   let isPasting = $state(false);
+  let isDragOver = $state(false);
 
   let documentName = $derived(
     documentSource?.kind === "file"
@@ -147,6 +150,49 @@
     }
   }
 
+  async function openDroppedFiles(paths: string[]) {
+    errorMessage = null;
+
+    if (paths.length === 0) return;
+
+    if (paths.length > 1) {
+      errorMessage = "Multiple files were dropped. Drop one Markdown file.";
+      return;
+    }
+
+    const droppedPath = paths[0];
+
+    if (!isMarkdownPath(droppedPath)) {
+      errorMessage = `${fileName(droppedPath)} is not a Markdown file.`;
+      return;
+    }
+
+    try {
+      await openDocumentAtPath(droppedPath);
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  // HTML5 drop events carry no file paths in Tauri; the webview drag-drop
+  // event is the only source of absolute paths.
+  onMount(() => {
+    const unlisten = getCurrentWebview().onDragDropEvent((event) => {
+      if (event.payload.type === "enter" || event.payload.type === "over") {
+        isDragOver = true;
+      } else if (event.payload.type === "leave") {
+        isDragOver = false;
+      } else if (event.payload.type === "drop") {
+        isDragOver = false;
+        void openDroppedFiles(event.payload.paths);
+      }
+    });
+
+    return () => {
+      void unlisten.then((stop) => stop());
+    };
+  });
+
   // Open a document passed on the command line (`markive path.md`).
   void (async () => {
     try {
@@ -180,7 +226,9 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
-<main class="grid min-h-screen grid-rows-[2.75rem_1fr] bg-background text-foreground">
+<main
+  class={`grid min-h-screen grid-rows-[2.75rem_1fr] bg-background text-foreground ${isDragOver ? "ring-2 ring-inset ring-ring" : ""}`}
+>
   <header class="path-rail flex items-center justify-between gap-4 border-b border-border px-4">
     <div class="flex min-w-0 items-center gap-2 font-mono text-xs text-muted-foreground">
       <FileText aria-hidden="true" class="size-3.5 shrink-0" strokeWidth={1.75} />
@@ -202,6 +250,11 @@
 
   {#if documentSource}
     <section class="min-h-0 overflow-auto bg-card" aria-label={`Rendered ${documentName}`}>
+      {#if errorMessage}
+        <p class="border-b border-border px-8 py-2 text-sm text-destructive" role="alert">
+          {errorMessage}
+        </p>
+      {/if}
       <article class="markdown mx-auto w-full max-w-[46rem] px-8 py-14">
         {@html renderedHtml}
       </article>
