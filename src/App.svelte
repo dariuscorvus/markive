@@ -1,6 +1,7 @@
 <script lang="ts">
   import { ClipboardPaste, FileText, FolderOpen } from "@lucide/svelte";
   import { invoke } from "@tauri-apps/api/core";
+  import { listen } from "@tauri-apps/api/event";
   import { readText } from "@tauri-apps/plugin-clipboard-manager";
   import { open } from "@tauri-apps/plugin-dialog";
 
@@ -12,6 +13,8 @@
   };
 
   type DocumentSource = { kind: "file"; path: string } | { kind: "clipboard" };
+
+  type OpenRequest = { path: string | null; error: string | null };
 
   const MARKDOWN_EXTENSIONS = ["md", "markdown", "mdown", "mkd"];
 
@@ -130,11 +133,28 @@
     }
   }
 
-  // Open a document passed on the command line (`markive path.md`).
+  async function handleOpenRequest(request: OpenRequest) {
+    errorMessage = null;
+
+    try {
+      if (request.error) {
+        errorMessage = request.error;
+      } else if (request.path) {
+        await openDocumentAtPath(request.path);
+      }
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  // Documents arrive from the command line at startup (`markive path.md`)
+  // and as macOS open-file events while running (Finder "Open With").
+  // The listener registers before the startup fetch so no event is lost.
   void (async () => {
     try {
-      const launchPath = await invoke<string | null>("launch_document");
-      if (launchPath) await openDocumentAtPath(launchPath);
+      await listen<OpenRequest>("open-document", (event) => void handleOpenRequest(event.payload));
+      const request = await invoke<OpenRequest | null>("launch_document");
+      if (request) await handleOpenRequest(request);
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : String(error);
     }
@@ -185,6 +205,11 @@
 
   {#if documentSource}
     <section class="min-h-0 overflow-auto bg-card" aria-label={`Rendered ${documentName}`}>
+      {#if errorMessage}
+        <p class="border-b border-border px-4 py-2 text-sm text-destructive" role="alert">
+          {errorMessage}
+        </p>
+      {/if}
       <article class="markdown mx-auto w-full max-w-[46rem] px-8 py-14">
         {@html renderedHtml}
       </article>
