@@ -112,8 +112,12 @@ pub fn render_markdown(markdown: &str) -> String {
 /// lexically; absolute sources are normalized in place. Every resolved
 /// path is reported in [`RenderedDocument::local_images`] so callers
 /// can grant access to exactly those files.
+///
+/// Without a `base_dir` — a document that never came from a file, like
+/// pasted clipboard text — only absolute sources resolve; relative
+/// sources have nothing to resolve against and pass through untouched.
 #[must_use]
-pub fn render_document(markdown: &str, base_dir: &Path) -> RenderedDocument {
+pub fn render_document(markdown: &str, base_dir: Option<&Path>) -> RenderedDocument {
     let mut local_images = Vec::new();
 
     let events = Parser::new_ext(markdown, markdown_options()).map(|event| match event {
@@ -168,8 +172,9 @@ fn has_url_scheme(src: &str) -> bool {
 }
 
 /// Resolves an image source to an absolute filesystem path, or `None`
-/// when the source is remote, empty, or not decodable.
-fn resolve_local_image(src: &str, base_dir: &Path) -> Option<PathBuf> {
+/// when the source is remote, empty, not decodable, or relative with
+/// no base directory to resolve against.
+fn resolve_local_image(src: &str, base_dir: Option<&Path>) -> Option<PathBuf> {
     if src.is_empty() || has_url_scheme(src) {
         return None;
     }
@@ -181,7 +186,7 @@ fn resolve_local_image(src: &str, base_dir: &Path) -> Option<PathBuf> {
     let joined = if path.is_absolute() {
         path.to_path_buf()
     } else {
-        base_dir.join(path)
+        base_dir?.join(path)
     };
 
     Some(normalize_lexically(&joined))
@@ -251,7 +256,7 @@ mod tests {
 
     #[test]
     fn resolves_relative_images_against_the_base_directory() {
-        let rendered = render_document("![logo](images/logo.png)", Path::new("/docs/notes"));
+        let rendered = render_document("![logo](images/logo.png)", Some(Path::new("/docs/notes")));
 
         assert!(rendered.html().contains("src=\"/docs/notes/images/logo.png\""));
         assert_eq!(
@@ -262,7 +267,7 @@ mod tests {
 
     #[test]
     fn resolves_parent_traversal_lexically() {
-        let rendered = render_document("![up](../shared/./a.png)", Path::new("/docs/notes"));
+        let rendered = render_document("![up](../shared/./a.png)", Some(Path::new("/docs/notes")));
 
         assert!(rendered.html().contains("src=\"/docs/shared/a.png\""));
         assert_eq!(rendered.local_images(), [PathBuf::from("/docs/shared/a.png")]);
@@ -270,14 +275,14 @@ mod tests {
 
     #[test]
     fn clamps_traversal_at_the_root() {
-        let rendered = render_document("![x](../../../../etc/a.png)", Path::new("/docs"));
+        let rendered = render_document("![x](../../../../etc/a.png)", Some(Path::new("/docs")));
 
         assert_eq!(rendered.local_images(), [PathBuf::from("/etc/a.png")]);
     }
 
     #[test]
     fn keeps_absolute_image_paths_and_reports_them() {
-        let rendered = render_document("![abs](/pictures/cat.png)", Path::new("/docs"));
+        let rendered = render_document("![abs](/pictures/cat.png)", Some(Path::new("/docs")));
 
         assert!(rendered.html().contains("src=\"/pictures/cat.png\""));
         assert_eq!(rendered.local_images(), [PathBuf::from("/pictures/cat.png")]);
@@ -287,15 +292,31 @@ mod tests {
     fn leaves_remote_images_untouched() {
         let markdown = "![a](https://example.com/a.png)\n\n![b](//example.com/b.png)";
 
-        let rendered = render_document(markdown, Path::new("/docs"));
+        let rendered = render_document(markdown, Some(Path::new("/docs")));
 
         assert!(rendered.html().contains("src=\"https://example.com/a.png\""));
         assert!(rendered.local_images().is_empty());
     }
 
     #[test]
+    fn resolves_absolute_images_without_a_base_directory() {
+        let rendered = render_document("![abs](/pictures/cat.png)", None);
+
+        assert!(rendered.html().contains("src=\"/pictures/cat.png\""));
+        assert_eq!(rendered.local_images(), [PathBuf::from("/pictures/cat.png")]);
+    }
+
+    #[test]
+    fn leaves_relative_images_untouched_without_a_base_directory() {
+        let rendered = render_document("![rel](images/logo.png)", None);
+
+        assert!(rendered.html().contains("src=\"images/logo.png\""));
+        assert!(rendered.local_images().is_empty());
+    }
+
+    #[test]
     fn decodes_percent_encoded_image_paths() {
-        let rendered = render_document("![shot](my%20shot.png)", Path::new("/docs"));
+        let rendered = render_document("![shot](my%20shot.png)", Some(Path::new("/docs")));
 
         assert_eq!(rendered.local_images(), [PathBuf::from("/docs/my shot.png")]);
     }
@@ -311,7 +332,7 @@ mod tests {
     fn render_document_still_removes_unsafe_html() {
         let markdown = "<script>alert('no')</script>\n\n[bad](javascript:alert('no'))";
 
-        let rendered = render_document(markdown, Path::new("/docs"));
+        let rendered = render_document(markdown, Some(Path::new("/docs")));
 
         assert!(!rendered.html().contains("<script"));
         assert!(!rendered.html().contains("javascript:"));

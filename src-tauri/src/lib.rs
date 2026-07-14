@@ -65,10 +65,20 @@ struct OpenedDocument {
     html: String,
 }
 
-#[tauri::command]
-async fn open_document(app: tauri::AppHandle, path: String) -> Result<OpenedDocument, String> {
+/// Grants the asset protocol access to exactly the images a rendered
+/// document references. A failed grant leaves that image broken in the
+/// view; it should not fail rendering.
+fn grant_image_access(app: &tauri::AppHandle, rendered: &markive_core::RenderedDocument) {
     use tauri::Manager;
 
+    let scope = app.asset_protocol_scope();
+    for image in rendered.local_images() {
+        let _ = scope.allow_file(image);
+    }
+}
+
+#[tauri::command]
+async fn open_document(app: tauri::AppHandle, path: String) -> Result<OpenedDocument, String> {
     let document = markive_core::open_document(&path)
         .map_err(|error| format!("Unable to read {path}: {error}"))?;
 
@@ -80,15 +90,8 @@ async fn open_document(app: tauri::AppHandle, path: String) -> Result<OpenedDocu
         .parent()
         .ok_or_else(|| format!("{path} has no parent directory"))?;
 
-    let rendered = markive_core::render_document(document.content(), base_dir);
-
-    // Grant the asset protocol access to exactly the images this
-    // document references. A failed grant leaves that image broken in
-    // the view; it should not fail opening the document.
-    let scope = app.asset_protocol_scope();
-    for image in rendered.local_images() {
-        let _ = scope.allow_file(image);
-    }
+    let rendered = markive_core::render_document(document.content(), Some(base_dir));
+    grant_image_access(&app, &rendered);
 
     Ok(OpenedDocument {
         path: canonical.to_string_lossy().into_owned(),
@@ -99,6 +102,17 @@ async fn open_document(app: tauri::AppHandle, path: String) -> Result<OpenedDocu
 #[tauri::command]
 fn render_markdown(markdown: &str) -> String {
     markive_core::render_markdown(markdown)
+}
+
+/// Renders pasted Markdown that has no backing file: absolute image
+/// paths resolve, relative ones have no base directory and stay as
+/// written.
+#[tauri::command]
+async fn render_clipboard(app: tauri::AppHandle, markdown: String) -> String {
+    let rendered = markive_core::render_document(&markdown, None);
+    grant_image_access(&app, &rendered);
+
+    rendered.html().to_owned()
 }
 
 fn read_clipboard_files() -> Result<Vec<String>, String> {
@@ -219,6 +233,7 @@ pub fn run(launch_path: Option<String>) {
         .invoke_handler(tauri::generate_handler![
             open_document,
             render_markdown,
+            render_clipboard,
             clipboard_files,
             launch_document
         ])
