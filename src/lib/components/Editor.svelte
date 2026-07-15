@@ -1,5 +1,12 @@
 <script lang="ts">
   import { markdown } from "@codemirror/lang-markdown";
+  import {
+    findNext,
+    findPrevious,
+    search,
+    SearchQuery,
+    setSearchQuery,
+  } from "@codemirror/search";
   import { EditorState } from "@codemirror/state";
   import { EditorView } from "@codemirror/view";
   import { basicSetup } from "codemirror";
@@ -23,6 +30,9 @@
       doc: text,
       extensions: [
         basicSetup,
+        // The search state field, driven programmatically from the
+        // app's find bar; CodeMirror's own panel stays unbound.
+        search(),
         markdown(),
         EditorView.lineWrapping,
         ...(text.includes("\r\n") ? [EditorState.lineSeparator.of("\r\n")] : []),
@@ -54,6 +64,30 @@
       view.focus();
     }
   });
+
+  /** Sets the active find query and returns the match count. */
+  export function setFind(query: string): number {
+    if (!view) return 0;
+
+    const searchQuery = new SearchQuery({ search: query, caseSensitive: false });
+    view.dispatch({ effects: setSearchQuery.of(searchQuery) });
+
+    if (!query) return 0;
+    let count = 0;
+    const cursor = searchQuery.getCursor(view.state);
+    while (!cursor.next().done) count += 1;
+    return count;
+  }
+
+  /** Selects and reveals the next match. */
+  export function findNextMatch() {
+    if (view) findNext(view);
+  }
+
+  /** Selects and reveals the previous match. */
+  export function findPreviousMatch() {
+    if (view) findPrevious(view);
+  }
 </script>
 
 <div bind:this={container} class="h-full min-h-0 overflow-hidden"></div>
