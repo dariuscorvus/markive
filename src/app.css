@@ -235,3 +235,14 @@
   accent-color: var(--primary);
   margin: 0 0.5rem 0 -1.4rem;
 }
+
+/* Document find highlights */
+.markdown mark[id^="find-match-"] {
+  background: color-mix(in srgb, var(--ring) 25%, transparent);
+  color: inherit;
+  border-radius: 2px;
+}
+.markdown mark[data-active] {
+  background: var(--ring);
+  color: var(--primary-foreground);
+}

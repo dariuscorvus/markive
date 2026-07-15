@@ -8,6 +8,10 @@
     FileText,
     FolderOpen,
     Save,
+    ChevronDown,
+    ChevronUp,
+    Search as SearchIcon,
+    X,
   } from "@lucide/svelte";
   import { convertFileSrc, invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
@@ -54,6 +58,18 @@
   // External file state: the disk copy changed under local edits, or
   // the file disappeared.
   let fileConflict = $state<"conflict" | "missing" | null>(null);
+
+  // Document-level find.
+  let findOpen = $state(false);
+  let findQuery = $state("");
+  let findIndex = $state(0);
+  let sourceFindCount = $state(0);
+  let findInput = $state<HTMLInputElement | null>(null);
+  let editorRef = $state<{
+    setFind: (query: string) => number;
+    findNextMatch: () => void;
+    findPreviousMatch: () => void;
+  } | null>(null);
 
   // Documents without a saved form (clipboard, stdin, untitled) are
   // dirty once they hold text; an empty untitled document is clean so
@@ -110,6 +126,116 @@
   function isMarkdownPath(path: string): boolean {
     const extension = fileName(path).split(".").pop()?.toLowerCase() ?? "";
     return MARKDOWN_EXTENSIONS.includes(extension);
+  }
+
+  // Wraps every case-insensitive match in the rendered HTML with a
+  // mark element. Operates on the parsed DOM, so text inside tags and
+  // attributes is never touched.
+  function markMatches(
+    html: string,
+    query: string,
+    activeIndex: number,
+  ): { html: string; count: number } {
+    if (!query) return { html, count: 0 };
+
+    const parsed = new DOMParser().parseFromString(html, "text/html");
+    const walker = parsed.createTreeWalker(parsed.body, NodeFilter.SHOW_TEXT);
+    const needle = query.toLowerCase();
+    const nodes: Text[] = [];
+    while (walker.nextNode()) nodes.push(walker.currentNode as Text);
+
+    let count = 0;
+    for (const node of nodes) {
+      const text = node.textContent ?? "";
+      const lower = text.toLowerCase();
+      if (!lower.includes(needle)) continue;
+
+      const fragment = parsed.createDocumentFragment();
+      let position = 0;
+      let matchAt = lower.indexOf(needle);
+      while (matchAt !== -1) {
+        fragment.append(parsed.createTextNode(text.slice(position, matchAt)));
+        const mark = parsed.createElement("mark");
+        mark.id = `find-match-${count}`;
+        if (count === activeIndex) mark.setAttribute("data-active", "");
+        mark.textContent = text.slice(matchAt, matchAt + query.length);
+        fragment.append(mark);
+        count += 1;
+        position = matchAt + query.length;
+        matchAt = lower.indexOf(needle, position);
+      }
+      fragment.append(parsed.createTextNode(text.slice(position)));
+      node.replaceWith(fragment);
+    }
+
+    return { html: parsed.body.innerHTML, count };
+  }
+
+  // The article shows marked HTML while find is open in a mode with a
+  // rendered pane.
+  let findResult = $derived.by(() =>
+    findOpen && findQuery && viewMode !== "source"
+      ? markMatches(renderedHtml, findQuery, findIndex)
+      : { html: renderedHtml, count: 0 },
+  );
+
+  let findCount = $derived(viewMode === "rendered" ? findResult.count : sourceFindCount);
+
+  // Keep the editor's search query in sync and count its matches.
+  $effect(() => {
+    if (findOpen && viewMode !== "rendered") {
+      sourceFindCount = editorRef?.setFind(findQuery) ?? 0;
+    }
+  });
+
+  // Reset the active match when the query changes.
+  $effect(() => {
+    void findQuery;
+    findIndex = 0;
+  });
+
+  // Bring the active rendered match into view.
+  $effect(() => {
+    if (findOpen && viewMode === "rendered" && findResult.count > 0) {
+      document.getElementById(`find-match-${findIndex}`)?.scrollIntoView({ block: "center" });
+    }
+  });
+
+  function openFind() {
+    if (!documentSource) return;
+    findOpen = true;
+    queueMicrotask(() => {
+      findInput?.focus();
+      findInput?.select();
+    });
+  }
+
+  function closeFind() {
+    findOpen = false;
+    findQuery = "";
+    if (viewMode !== "rendered") editorRef?.setFind("");
+  }
+
+  function findStep(direction: 1 | -1) {
+    if (viewMode === "rendered") {
+      if (findResult.count === 0) return;
+      findIndex = (findIndex + direction + findResult.count) % findResult.count;
+      return;
+    }
+
+    if (direction === 1) editorRef?.findNextMatch();
+    else editorRef?.findPreviousMatch();
+  }
+
+  function handleFindKeydown(event: KeyboardEvent) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeFind();
+    }
+    if (event.key === "Enter") {
+      event.preventDefault();
+      findStep(event.shiftKey ? -1 : 1);
+    }
   }
 
   // The backend resolves local image sources to absolute filesystem
@@ -565,6 +691,18 @@
       return;
     }
 
+    if (key === "f" && documentSource) {
+      event.preventDefault();
+      openFind();
+      return;
+    }
+
+    if (key === "g" && findOpen) {
+      event.preventDefault();
+      findStep(event.shiftKey ? -1 : 1);
+      return;
+    }
+
     if (key === "s" && documentSource) {
       event.preventDefault();
       void saveAsAction(event.shiftKey);
@@ -606,7 +744,7 @@
 <svelte:window onkeydown={handleKeydown} />
 
 <main
-  class={`grid min-h-screen grid-rows-[2.75rem_auto_1fr] bg-background text-foreground ${isDragOver ? "ring-2 ring-inset ring-ring" : ""}`}
+  class={`grid min-h-screen grid-rows-[2.75rem_auto_auto_1fr] bg-background text-foreground ${isDragOver ? "ring-2 ring-inset ring-ring" : ""}`}
 >
   <header class="path-rail flex items-center justify-between gap-4 border-b border-border px-4">
     <div class="flex min-w-0 items-center gap-2 font-mono text-xs text-muted-foreground">
@@ -695,6 +833,45 @@
     <div></div>
   {/if}
 
+  {#if findOpen}
+    <div class="flex items-center gap-2 border-b border-border bg-secondary px-4 py-2" role="search">
+      <SearchIcon aria-hidden="true" class="size-3.5 shrink-0 text-muted-foreground" />
+      <input
+        bind:this={findInput}
+        bind:value={findQuery}
+        onkeydown={handleFindKeydown}
+        type="text"
+        placeholder="Find in document"
+        aria-label="Find in document"
+        class="w-64 rounded-md border border-input bg-background px-2 py-1 text-sm outline-none focus:ring-1 focus:ring-ring"
+      />
+      <span class="text-xs text-muted-foreground" role="status">
+        {#if findQuery.length === 0}
+          &nbsp;
+        {:else if findCount === 0}
+          No matches
+        {:else if viewMode === "rendered"}
+          {findIndex + 1} of {findCount}
+        {:else}
+          {findCount} {findCount === 1 ? "match" : "matches"}
+        {/if}
+      </span>
+      <div class="ml-auto flex items-center gap-1">
+        <Button variant="ghost" size="sm" onclick={() => findStep(-1)} disabled={findCount === 0}>
+          <ChevronUp aria-hidden="true" />
+        </Button>
+        <Button variant="ghost" size="sm" onclick={() => findStep(1)} disabled={findCount === 0}>
+          <ChevronDown aria-hidden="true" />
+        </Button>
+        <Button variant="ghost" size="sm" onclick={closeFind} aria-label="Close find">
+          <X aria-hidden="true" />
+        </Button>
+      </div>
+    </div>
+  {:else}
+    <div></div>
+  {/if}
+
   {#if documentSource}
     {#if viewMode === "source"}
       <section class="grid min-h-0 grid-rows-[auto_1fr] bg-card" aria-label={`Source of ${documentName}`}>
@@ -705,7 +882,7 @@
         {:else}
           <div></div>
         {/if}
-        <Editor value={sourceText} onchange={handleEdit} />
+        <Editor bind:this={editorRef} value={sourceText} onchange={handleEdit} />
       </section>
     {:else if viewMode === "split"}
       <section class="grid min-h-0 grid-rows-[auto_1fr] bg-card" aria-label={`Split view of ${documentName}`}>
@@ -718,11 +895,11 @@
         {/if}
         <div class="grid min-h-0 grid-cols-2">
           <div class="min-h-0 border-r border-border">
-            <Editor value={sourceText} onchange={handleEdit} />
+            <Editor bind:this={editorRef} value={sourceText} onchange={handleEdit} />
           </div>
           <div class="min-h-0 overflow-auto">
             <article class="markdown mx-auto w-full max-w-[46rem] px-8 py-14">
-              {@html renderedHtml}
+              {@html findResult.html}
             </article>
           </div>
         </div>
@@ -735,7 +912,7 @@
           </p>
         {/if}
         <article class="markdown mx-auto w-full max-w-[46rem] px-8 py-14">
-          {@html renderedHtml}
+          {@html findResult.html}
         </article>
       </section>
     {/if}
