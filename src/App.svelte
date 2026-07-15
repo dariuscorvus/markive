@@ -80,6 +80,8 @@
     setFind: (query: string) => number;
     findNextMatch: () => void;
     findPreviousMatch: () => void;
+    getScrollTop: () => number;
+    setScrollTop: (top: number) => void;
   } | null>(null);
 
   // Documents without a saved form (clipboard, stdin, untitled) are
@@ -567,14 +569,121 @@
     };
   });
 
-  // Open a document passed on the command line (`markive path.md`).
+  // The saved session: last document, unsaved edits, view mode, and
+  // scroll positions. Quit (cmd+Q) is deliberately unguarded (#9), so
+  // unsaved edits must survive through here to make quitting lossless.
+  type Session = {
+    source: DocumentSource;
+    viewMode: typeof viewMode;
+    sourceText: string;
+    savedText: string | null;
+    scroll: { rendered: number; source: number };
+  };
+
+  // Saving starts only after startup settles, so a half-restored state
+  // never overwrites the stored session.
+  let sessionReady = $state(false);
+  let renderedScrollEl = $state<HTMLElement | null>(null);
+  let sessionTimer: ReturnType<typeof setTimeout> | undefined;
+
+  function scheduleSessionSave() {
+    if (!sessionReady) return;
+
+    clearTimeout(sessionTimer);
+    sessionTimer = setTimeout(() => {
+      const session = documentSource
+        ? ({
+            source: documentSource,
+            viewMode,
+            sourceText,
+            savedText,
+            scroll: {
+              rendered: renderedScrollEl?.scrollTop ?? 0,
+              source: editorRef?.getScrollTop() ?? 0,
+            },
+          } satisfies Session)
+        : null;
+      void invoke("save_session", { session }).catch(() => {
+        // A session that fails to save costs one restore, nothing more.
+      });
+    }, 300);
+  }
+
+  // Document, edits, and view mode changes schedule a save; scroll is
+  // captured by the window listener below.
+  $effect(() => {
+    void [documentSource, sourceText, savedText, viewMode];
+    scheduleSessionSave();
+  });
+
+  // Scroll events do not bubble but are observable in the capture
+  // phase, covering the rendered pane and the editor alike.
+  onMount(() => {
+    const handler = () => scheduleSessionSave();
+    window.addEventListener("scroll", handler, { capture: true, passive: true });
+    return () => window.removeEventListener("scroll", handler, { capture: true });
+  });
+
+  async function restoreSession() {
+    const session = await invoke<Session | null>("load_session");
+    if (!session?.source) return;
+
+    try {
+      if (session.source.kind === "file") {
+        await openDocumentAtPath(session.source.path, true);
+
+        // The stored buffer differs from disk: restore the unsaved
+        // edits. When disk also moved on since the last run, the
+        // conflict banner offers the reload.
+        if (session.sourceText !== sourceText) {
+          const diskContent = sourceText;
+          sourceText = session.sourceText;
+          if (session.savedText !== null && session.savedText !== diskContent) {
+            fileConflict = "conflict";
+          }
+          await renderCurrentSource();
+        }
+      } else {
+        // Pathless documents (clipboard, stdin, untitled) restore from
+        // the stored buffer alone; an empty one is not worth showing.
+        if (!session.sourceText) return;
+        documentSource = session.source;
+        sourceText = session.sourceText;
+        savedText = session.savedText;
+        await renderCurrentSource();
+      }
+
+      viewMode = session.viewMode ?? "rendered";
+
+      // Scroll restores after the restored mode has rendered.
+      requestAnimationFrame(() => {
+        if (renderedScrollEl) renderedScrollEl.scrollTop = session.scroll?.rendered ?? 0;
+        editorRef?.setScrollTop(session.scroll?.source ?? 0);
+      });
+    } catch {
+      // The file is gone or unreadable: fall back to the empty state.
+      documentSource = null;
+      sourceText = "";
+      savedText = null;
+      renderedHtml = "";
+    }
+  }
+
+  // Open a document passed on the command line (`markive path.md`),
+  // falling back to the previous session.
   void (async () => {
     try {
       await listen<OpenRequest>("open-document", (event) => void handleOpenRequest(event.payload));
       const request = await invoke<OpenRequest | null>("launch_document");
-      if (request) await handleOpenRequest(request);
+      if (request) {
+        await handleOpenRequest(request);
+      } else {
+        await restoreSession();
+      }
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : String(error);
+    } finally {
+      sessionReady = true;
     }
   })();
 
@@ -970,7 +1079,7 @@
           <div class="min-h-0 border-r border-border">
             <Editor bind:this={editorRef} value={sourceText} dark={isDark} onchange={handleEdit} />
           </div>
-          <div class="min-h-0 overflow-auto">
+          <div class="min-h-0 overflow-auto" bind:this={renderedScrollEl}>
             <article class="markdown mx-auto w-full max-w-[46rem] px-8 py-14">
               {@html findResult.html}
             </article>
@@ -978,7 +1087,11 @@
         </div>
       </section>
     {:else}
-      <section class="min-h-0 overflow-auto bg-card" aria-label={`Rendered ${documentName}`}>
+      <section
+        class="min-h-0 overflow-auto bg-card"
+        bind:this={renderedScrollEl}
+        aria-label={`Rendered ${documentName}`}
+      >
         {#if errorMessage}
           <p class="border-b border-border px-8 py-2 text-sm text-destructive" role="alert">
             {errorMessage}
