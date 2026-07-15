@@ -590,6 +590,55 @@ fn build_menu(app: &tauri::App) -> tauri::Result<MenuHandles> {
     })
 }
 
+/// Symlinks the running binary to /usr/local/bin/markive so the CLI
+/// (#49) works from a terminal after installing the app. Tries a
+/// direct symlink first; when /usr/local/bin is not writable, asks for
+/// administrator privileges through the system prompt.
+#[tauri::command]
+fn install_cli() -> Result<String, String> {
+    let exe = std::env::current_exe()
+        .map_err(|error| format!("Unable to locate the running binary: {error}"))?;
+    let target = std::path::Path::new("/usr/local/bin/markive");
+
+    let direct = || -> std::io::Result<()> {
+        std::fs::create_dir_all("/usr/local/bin")?;
+        if target.symlink_metadata().is_ok() {
+            std::fs::remove_file(target)?;
+        }
+        std::os::unix::fs::symlink(&exe, target)
+    };
+
+    if direct().is_ok() {
+        return Ok(format!("Linked {} to {}", target.display(), exe.display()));
+    }
+
+    // Paths come from the OS, but single quotes still end the shell
+    // string; refuse rather than build a broken command.
+    let exe_str = exe.to_string_lossy();
+    if exe_str.contains('\'') {
+        return Err("The application path contains an unsupported quote character.".into());
+    }
+
+    let script = format!(
+        "do shell script \"mkdir -p /usr/local/bin && ln -sf '{exe_str}' '/usr/local/bin/markive'\" with administrator privileges"
+    );
+    let output = std::process::Command::new("osascript")
+        .args(["-e", &script])
+        .output()
+        .map_err(|error| format!("Unable to run the install step: {error}"))?;
+
+    if output.status.success() {
+        Ok(format!("Linked {} to {}", target.display(), exe.display()))
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("User canceled") {
+            Err("Installation canceled.".into())
+        } else {
+            Err(format!("Unable to install the command line tool: {}", stderr.trim()))
+        }
+    }
+}
+
 fn read_clipboard_files() -> Result<Vec<String>, String> {
     use clipboard_rs::{Clipboard, ClipboardContext};
 
@@ -793,7 +842,8 @@ pub fn run(launch: Launch) {
             watch_document,
             set_menu_state,
             load_session,
-            save_session
+            save_session,
+            install_cli
         ])
         .build(tauri::generate_context!())
         .expect("failed to build Markive");
