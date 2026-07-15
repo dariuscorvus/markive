@@ -144,9 +144,24 @@ fn markdown_options() -> Options {
 
 fn sanitize(html: &str) -> String {
     let mut builder = Builder::default();
+    // Allow common structural HTML elements and attributes for markdown documents.
     builder
-        .add_tags(["input"])
-        .add_tag_attributes("input", ["checked", "disabled", "type"]);
+        .add_tags([
+            "div", "section", "article", "aside", "main", "figure", "figcaption",
+            "details", "summary", "dialog", "data", "mark", "meter", "progress", "time",
+            "input", "button",
+        ])
+        .add_tag_attributes("div", ["class", "id"])
+        .add_tag_attributes("section", ["class", "id"])
+        .add_tag_attributes("article", ["class", "id"])
+        .add_tag_attributes("figure", ["class", "id"])
+        .add_tag_attributes("details", ["open"])
+        .add_tag_attributes("input", ["checked", "disabled", "type"])
+        .add_tag_attributes("button", ["disabled", "type"])
+        .add_tag_attributes("data", ["value"])
+        .add_tag_attributes("meter", ["value", "min", "max", "low", "high"])
+        .add_tag_attributes("progress", ["value", "max"])
+        .add_tag_attributes("time", ["datetime"]);
     for heading in ["h1", "h2", "h3", "h4", "h5", "h6"] {
         builder.add_tag_attributes(heading, ["id"]);
     }
@@ -563,5 +578,35 @@ mod tests {
         assert!(!html.contains("<img"));
         assert!(!html.contains("javascript:"));
         assert!(html.contains("&lt;img"));
+    }
+
+    #[test]
+    fn allows_structural_html_elements() {
+        let markdown = r#"<div class="container">
+<figure>
+  <img src="image.png" alt="Example">
+  <figcaption>A caption</figcaption>
+</figure>
+<section id="intro">
+  <article>Some content</article>
+</section>
+<details open>
+  <summary>Details</summary>
+  Hidden content
+</details>
+</div>"#;
+
+        let html = render_markdown(markdown);
+
+        assert!(html.contains("<div"));
+        assert!(html.contains("class=\"container\""));
+        assert!(html.contains("<figure"));
+        assert!(html.contains("<figcaption>"));
+        assert!(html.contains("<section"));
+        assert!(html.contains("id=\"intro\""));
+        assert!(html.contains("<article>"));
+        assert!(html.contains("<details"));
+        assert!(html.contains("open"));
+        assert!(html.contains("<summary>"));
     }
 }
