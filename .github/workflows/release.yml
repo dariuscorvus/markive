@@ -23,6 +23,11 @@ jobs:
     runs-on: macos-latest
     permissions:
       contents: write
+    # The secrets context is not available in step `if` conditions;
+    # these flags carry the presence check instead.
+    env:
+      HAS_SIGNING_CREDENTIALS: ${{ secrets.APPLE_CERTIFICATE != '' }}
+      HAS_NOTARY_CREDENTIALS: ${{ secrets.APPLE_ID != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -53,7 +58,7 @@ jobs:
       # values: Tauri treats a set-but-empty APPLE_CERTIFICATE as
       # credentials and fails importing the empty certificate.
       - name: Enable signing when credentials are configured
-        if: ${{ secrets.APPLE_CERTIFICATE != '' }}
+        if: env.HAS_SIGNING_CREDENTIALS == 'true'
         run: |
           {
             echo "APPLE_CERTIFICATE<<MARKIVE_EOF"
@@ -64,7 +69,7 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Enable notarization when credentials are configured
-        if: ${{ secrets.APPLE_ID != '' }}
+        if: env.HAS_NOTARY_CREDENTIALS == 'true'
         run: |
           {
             echo "APPLE_ID=${{ secrets.APPLE_ID }}"
