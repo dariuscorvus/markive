@@ -95,6 +95,12 @@
   let preferences = $state<Preferences>(loadPreferences());
   let settingsOpen = $state(false);
 
+  // Moves focus into a dialog when it opens, so keyboard and
+  // VoiceOver users land inside it.
+  function focusOnMount(node: HTMLElement) {
+    node.focus();
+  }
+
   // The number input can hold the empty state mid-edit; the editor
   // always gets a usable size.
   let editorFontSize = $derived(
@@ -930,6 +936,11 @@
       return;
     }
 
+    if (event.key === "Escape" && confirmResolve) {
+      confirmResolve("cancel");
+      return;
+    }
+
     if (!(event.metaKey || event.ctrlKey)) return;
 
     const key = event.key.toLowerCase();
@@ -1081,10 +1092,22 @@
         {/if}
       </span>
       <div class="ml-auto flex items-center gap-1">
-        <Button variant="ghost" size="sm" onclick={() => findStep(-1)} disabled={findCount === 0}>
+        <Button
+          variant="ghost"
+          size="sm"
+          aria-label="Previous match"
+          onclick={() => findStep(-1)}
+          disabled={findCount === 0}
+        >
           <ChevronUp aria-hidden="true" />
         </Button>
-        <Button variant="ghost" size="sm" onclick={() => findStep(1)} disabled={findCount === 0}>
+        <Button
+          variant="ghost"
+          size="sm"
+          aria-label="Next match"
+          onclick={() => findStep(1)}
+          disabled={findCount === 0}
+        >
           <ChevronDown aria-hidden="true" />
         </Button>
         <Button variant="ghost" size="sm" onclick={closeFind} aria-label="Close find">
@@ -1135,7 +1158,17 @@
               onchange={handleEdit}
             />
           </div>
-          <div class="min-h-0 overflow-auto" bind:this={renderedScrollEl}>
+          <!-- Focusable so the preview scrolls with arrow keys alone —
+               the WAI pattern for scrollable regions, which this a11y
+               rule does not model. -->
+          <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+          <div
+            class="min-h-0 overflow-auto focus-visible:outline-2 focus-visible:outline-ring"
+            bind:this={renderedScrollEl}
+            tabindex="0"
+            role="region"
+            aria-label="Rendered preview"
+          >
             <article class="markdown mx-auto w-full px-8 py-14" style={`max-width: ${proseWidth}`}>
               {@html findResult.html}
             </article>
@@ -1143,9 +1176,14 @@
         </div>
       </section>
     {:else}
+      <!-- Focusable so the document scrolls with arrow keys alone —
+           the WAI pattern for scrollable regions, which this a11y rule
+           does not model. -->
+      <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
       <section
-        class="min-h-0 overflow-auto bg-card"
+        class="min-h-0 overflow-auto bg-card focus-visible:outline-2 focus-visible:outline-ring"
         bind:this={renderedScrollEl}
+        tabindex="0"
         aria-label={`Rendered ${documentName}`}
       >
         {#if errorMessage}
@@ -1209,7 +1247,9 @@
         <Button variant="outline" size="sm" onclick={() => confirmResolve?.("discard")}>
           Discard
         </Button>
-        <Button size="sm" onclick={() => confirmResolve?.("save")}>Save</Button>
+        <Button size="sm" onclick={() => confirmResolve?.("save")} {@attach focusOnMount}>
+          Save
+        </Button>
       </div>
     </div>
   </div>
@@ -1230,6 +1270,7 @@
           <select
             bind:value={themePreference}
             class="rounded-md border border-input bg-background px-2 py-1.5"
+            {@attach focusOnMount}
           >
             <option value="system">System</option>
             <option value="light">Light</option>
