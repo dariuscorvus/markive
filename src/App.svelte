@@ -843,6 +843,10 @@
         type="text"
         placeholder="Find in document"
         aria-label="Find in document"
+        autocomplete="off"
+        autocorrect="off"
+        autocapitalize="off"
+        spellcheck="false"
         class="w-64 rounded-md border border-input bg-background px-2 py-1 text-sm outline-none focus:ring-1 focus:ring-ring"
       />
       <span class="text-xs text-muted-foreground" role="status">
