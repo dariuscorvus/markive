@@ -7,18 +7,24 @@
     SearchQuery,
     setSearchQuery,
   } from "@codemirror/search";
-  import { EditorState } from "@codemirror/state";
+  import { Compartment, EditorState } from "@codemirror/state";
   import { EditorView } from "@codemirror/view";
+  import { oneDark } from "@codemirror/theme-one-dark";
   import { basicSetup } from "codemirror";
   import { onMount } from "svelte";
 
   let {
     value,
+    dark = false,
     onchange,
   }: {
     value: string;
+    dark?: boolean;
     onchange: (value: string) => void;
   } = $props();
+
+  // Swaps the editor theme in place, without resetting editor state.
+  const theme = new Compartment();
 
   let container: HTMLDivElement;
   let view: EditorView | undefined;
@@ -34,6 +40,7 @@
         // app's find bar; CodeMirror's own panel stays unbound.
         search(),
         markdown(),
+        theme.of(dark ? oneDark : []),
         EditorView.lineWrapping,
         ...(text.includes("\r\n") ? [EditorState.lineSeparator.of("\r\n")] : []),
         EditorView.updateListener.of((update) => {
@@ -54,6 +61,10 @@
     view = new EditorView({ state: stateFor(value), parent: container });
     view.focus();
     return () => view?.destroy();
+  });
+
+  $effect(() => {
+    view?.dispatch({ effects: theme.reconfigure(dark ? oneDark : []) });
   });
 
   // A new document (different text than the editor holds) resets the

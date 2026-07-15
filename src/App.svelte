@@ -53,6 +53,17 @@
   // had a file (clipboard, stdin), which stay dirty until saved.
   let savedText = $state<string | null>(null);
   let viewMode = $state<"rendered" | "source" | "split">("rendered");
+
+  // Appearance: an explicit choice, or the macOS appearance (default).
+  type ThemePreference = "light" | "dark" | "system";
+  const storedTheme = localStorage.getItem("markive-theme");
+  let themePreference = $state<ThemePreference>(
+    storedTheme === "light" || storedTheme === "dark" ? storedTheme : "system",
+  );
+  let systemDark = $state(window.matchMedia("(prefers-color-scheme: dark)").matches);
+  let isDark = $derived(
+    themePreference === "dark" || (themePreference === "system" && systemDark),
+  );
   let errorMessage = $state<string | null>(null);
   let confirmResolve = $state<((choice: "save" | "discard" | "cancel") => void) | null>(null);
   // External file state: the disk copy changed under local edits, or
@@ -659,6 +670,15 @@
       case "view-split":
         void setViewMode("split");
         break;
+      case "theme-light":
+        themePreference = "light";
+        break;
+      case "theme-dark":
+        themePreference = "dark";
+        break;
+      case "theme-system":
+        themePreference = "system";
+        break;
     }
   }
 
@@ -676,9 +696,35 @@
     void invoke("set_menu_state", {
       hasDocument: documentSource !== null,
       viewMode,
+      theme: themePreference,
     }).catch(() => {
       // A menu that lags the document state is not worth surfacing.
     });
+  });
+
+  // The System preference follows macOS appearance changes live.
+  onMount(() => {
+    const media = window.matchMedia("(prefers-color-scheme: dark)");
+    const update = (event: MediaQueryListEvent) => {
+      systemDark = event.matches;
+    };
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  });
+
+  $effect(() => {
+    document.documentElement.classList.toggle("dark", isDark);
+    localStorage.setItem("markive-theme", themePreference);
+  });
+
+  // The window chrome (title bar) follows the preference; null returns
+  // it to the system appearance.
+  $effect(() => {
+    void getCurrentWindow()
+      .setTheme(themePreference === "system" ? null : themePreference)
+      .catch(() => {
+        // Chrome that lags the content theme is not worth surfacing.
+      });
   });
 
   // Closing the window guards unsaved changes. Quit (cmd+Q) is
@@ -909,7 +955,7 @@
         {:else}
           <div></div>
         {/if}
-        <Editor bind:this={editorRef} value={sourceText} onchange={handleEdit} />
+        <Editor bind:this={editorRef} value={sourceText} dark={isDark} onchange={handleEdit} />
       </section>
     {:else if viewMode === "split"}
       <section class="grid min-h-0 grid-rows-[auto_1fr] bg-card" aria-label={`Split view of ${documentName}`}>
@@ -922,7 +968,7 @@
         {/if}
         <div class="grid min-h-0 grid-cols-2">
           <div class="min-h-0 border-r border-border">
-            <Editor bind:this={editorRef} value={sourceText} onchange={handleEdit} />
+            <Editor bind:this={editorRef} value={sourceText} dark={isDark} onchange={handleEdit} />
           </div>
           <div class="min-h-0 overflow-auto">
             <article class="markdown mx-auto w-full max-w-[46rem] px-8 py-14">

@@ -323,6 +323,9 @@ struct MenuHandles {
     rendered: tauri::menu::CheckMenuItem<tauri::Wry>,
     source: tauri::menu::CheckMenuItem<tauri::Wry>,
     split: tauri::menu::CheckMenuItem<tauri::Wry>,
+    theme_light: tauri::menu::CheckMenuItem<tauri::Wry>,
+    theme_dark: tauri::menu::CheckMenuItem<tauri::Wry>,
+    theme_system: tauri::menu::CheckMenuItem<tauri::Wry>,
 }
 
 /// Syncs menu item state with the frontend's document state. Called on
@@ -333,6 +336,7 @@ fn set_menu_state(
     handles: tauri::State<'_, MenuHandles>,
     has_document: bool,
     view_mode: String,
+    theme: String,
 ) -> Result<(), String> {
     let apply = || -> tauri::Result<()> {
         handles.save.set_enabled(has_document)?;
@@ -346,6 +350,14 @@ fn set_menu_state(
         ] {
             item.set_enabled(has_document)?;
             item.set_checked(has_document && view_mode == mode)?;
+        }
+
+        for (item, preference) in [
+            (&handles.theme_light, "light"),
+            (&handles.theme_dark, "dark"),
+            (&handles.theme_system, "system"),
+        ] {
+            item.set_checked(theme == preference)?;
         }
         Ok(())
     };
@@ -419,10 +431,23 @@ fn build_menu(app: &tauri::App) -> tauri::Result<MenuHandles> {
         .separator()
         .item(&find)
         .build()?;
+    let theme_light = CheckMenuItemBuilder::with_id("theme-light", "Light").build(app)?;
+    let theme_dark = CheckMenuItemBuilder::with_id("theme-dark", "Dark").build(app)?;
+    let theme_system = CheckMenuItemBuilder::with_id("theme-system", "System")
+        .checked(true)
+        .build(app)?;
+    let appearance_menu = SubmenuBuilder::new(app, "Appearance")
+        .item(&theme_light)
+        .item(&theme_dark)
+        .item(&theme_system)
+        .build()?;
+
     let view_menu = SubmenuBuilder::new(app, "View")
         .item(&rendered)
         .item(&source)
         .item(&split)
+        .separator()
+        .item(&appearance_menu)
         .separator()
         .fullscreen()
         .build()?;
@@ -443,6 +468,9 @@ fn build_menu(app: &tauri::App) -> tauri::Result<MenuHandles> {
         rendered,
         source,
         split,
+        theme_light,
+        theme_dark,
+        theme_system,
     })
 }
 
@@ -612,6 +640,9 @@ pub fn run(launch: Launch) {
                     | "view-rendered"
                     | "view-source"
                     | "view-split"
+                    | "theme-light"
+                    | "theme-dark"
+                    | "theme-system"
             ) {
                 let _ = app.emit("menu-action", id);
             }
