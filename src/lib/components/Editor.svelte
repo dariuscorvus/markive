@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { redo, undo } from "@codemirror/commands";
   import { markdown } from "@codemirror/lang-markdown";
   import {
     findNext,
@@ -119,6 +120,15 @@
   /** Selects and reveals the previous match. */
   export function findPreviousMatch() {
     if (view) findPrevious(view);
+  }
+
+  /** Undoes the last edit; routed from the native Edit menu. */
+  export function undoEdit() {
+    if (view) undo(view);
+  }
+
+  export function redoEdit() {
+    if (view) redo(view);
   }
 
   /** The editor's scroll offset, for session persistence. */

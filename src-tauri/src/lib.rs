@@ -525,9 +525,20 @@ fn build_menu(app: &tauri::App) -> tauri::Result<MenuHandles> {
         .separator()
         .close_window()
         .build()?;
+    // Undo and Redo are custom items: the predefined ones fire
+    // WebKit's undo: selector, which never reaches CodeMirror's own
+    // history (#76). These forward to the frontend like every other
+    // custom item.
+    let undo = MenuItemBuilder::with_id("undo", "Undo")
+        .accelerator("CmdOrCtrl+Z")
+        .build(app)?;
+    let redo = MenuItemBuilder::with_id("redo", "Redo")
+        .accelerator("Shift+CmdOrCtrl+Z")
+        .build(app)?;
+
     let edit_menu = SubmenuBuilder::new(app, "Edit")
-        .undo()
-        .redo()
+        .item(&undo)
+        .item(&redo)
         .separator()
         .cut()
         .copy()
@@ -748,6 +759,8 @@ pub fn run(launch: Launch) {
             if matches!(
                 id,
                 "new" | "open"
+                    | "undo"
+                    | "redo"
                     | "save"
                     | "save-as"
                     | "find"
