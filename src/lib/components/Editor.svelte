@@ -42,6 +42,7 @@
 
   onMount(() => {
     view = new EditorView({ state: stateFor(value), parent: container });
+    view.focus();
     return () => view?.destroy();
   });
 
@@ -50,6 +51,7 @@
   $effect(() => {
     if (view && value !== view.state.sliceDoc()) {
       view.setState(stateFor(value));
+      view.focus();
     }
   });
 </script>

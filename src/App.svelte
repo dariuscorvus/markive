@@ -1,5 +1,14 @@
 <script lang="ts">
-  import { ClipboardPaste, Code, Columns2, Eye, FileText, FolderOpen, Save } from "@lucide/svelte";
+  import {
+    ClipboardPaste,
+    Code,
+    Columns2,
+    Eye,
+    FilePlus,
+    FileText,
+    FolderOpen,
+    Save,
+  } from "@lucide/svelte";
   import { convertFileSrc, invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -26,7 +35,8 @@
   type DocumentSource =
     | { kind: "file"; path: string }
     | { kind: "clipboard" }
-    | { kind: "stdin" };
+    | { kind: "stdin" }
+    | { kind: "untitled" };
 
   type OpenRequest = { path: string | null; stdinPath: string | null; error: string | null };
 
@@ -42,8 +52,12 @@
   let errorMessage = $state<string | null>(null);
   let confirmResolve = $state<((choice: "save" | "discard" | "cancel") => void) | null>(null);
 
+  // Documents without a saved form (clipboard, stdin, untitled) are
+  // dirty once they hold text; an empty untitled document is clean so
+  // an unused window closes without a prompt.
   let isDirty = $derived(
-    documentSource !== null && (savedText === null || sourceText !== savedText),
+    documentSource !== null &&
+      (savedText === null ? sourceText.length > 0 : sourceText !== savedText),
   );
   let isOpening = $state(false);
   let isPasting = $state(false);
@@ -57,24 +71,34 @@
       : null,
   );
 
-  let documentName = $derived(
-    documentSource?.kind === "file"
-      ? (documentSource.path.split(/[\\/]/).pop() ?? "Markive")
-      : documentSource?.kind === "clipboard"
-        ? "Clipboard"
-        : documentSource?.kind === "stdin"
-          ? "stdin"
-          : "Markive",
-  );
-  let sourceLabel = $derived(
-    documentSource?.kind === "file"
-      ? documentSource.path
-      : documentSource?.kind === "clipboard"
-        ? "Clipboard"
-        : documentSource?.kind === "stdin"
-          ? "Piped from stdin"
-          : "No file open",
-  );
+  let documentName = $derived.by(() => {
+    switch (documentSource?.kind) {
+      case "file":
+        return documentSource.path.split(/[\\/]/).pop() ?? "Markive";
+      case "clipboard":
+        return "Clipboard";
+      case "stdin":
+        return "stdin";
+      case "untitled":
+        return "Untitled";
+      default:
+        return "Markive";
+    }
+  });
+  let sourceLabel = $derived.by(() => {
+    switch (documentSource?.kind) {
+      case "file":
+        return documentSource.path;
+      case "clipboard":
+        return "Clipboard";
+      case "stdin":
+        return "Piped from stdin";
+      case "untitled":
+        return "Untitled";
+      default:
+        return "No file open";
+    }
+  });
 
   function fileName(path: string): string {
     return path.split(/[\\/]/).pop() ?? path;
@@ -125,32 +149,57 @@
     });
   }
 
-  async function saveCurrentDocument(): Promise<boolean> {
-    let path = documentSource?.kind === "file" ? documentSource.path : null;
+  // Saves to the current path; documents without one ask for a
+  // location. `alwaysAsk` is Save As. The native dialog confirms
+  // replacing an existing file.
+  async function saveCurrentDocument(alwaysAsk = false): Promise<boolean> {
+    let path = !alwaysAsk && documentSource?.kind === "file" ? documentSource.path : null;
 
     if (!path) {
       path = await save({
         title: "Save Markdown",
+        defaultPath: documentSource?.kind === "file" ? documentName : `${documentName}.md`,
         filters: [{ name: "Markdown", extensions: MARKDOWN_EXTENSIONS }],
       });
       if (!path) return false;
     }
 
     await invoke("save_file", { path, content: sourceText });
+    const pathChanged = documentSource?.kind !== "file" || documentSource.path !== path;
     documentSource = { kind: "file", path };
     savedText = sourceText;
+
+    // A new location changes the base directory; relative images and
+    // links resolve against it from now on.
+    if (pathChanged) await renderCurrentSource();
+
     return true;
   }
 
-  async function saveAction() {
+  async function newDocument() {
+    if (!(await canDiscardDocument())) return;
+
+    documentSource = { kind: "untitled" };
+    sourceText = "";
+    savedText = null;
+    renderedHtml = "";
+    errorMessage = null;
+    viewMode = "source";
+  }
+
+  async function saveAsAction(alwaysAsk = false) {
     if (!documentSource) return;
 
     errorMessage = null;
     try {
-      await saveCurrentDocument();
+      await saveCurrentDocument(alwaysAsk);
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : String(error);
     }
+  }
+
+  function saveAction() {
+    void saveAsAction(false);
   }
 
   // Gate for every action that replaces or closes the document.
@@ -450,9 +499,15 @@
 
     const key = event.key.toLowerCase();
 
+    if (key === "n") {
+      event.preventDefault();
+      void newDocument();
+      return;
+    }
+
     if (key === "s" && documentSource) {
       event.preventDefault();
-      void saveAction();
+      void saveAsAction(event.shiftKey);
       return;
     }
 
@@ -532,6 +587,10 @@
             Split
           </Button>
         </div>
+        <Button variant="ghost" size="sm" onclick={() => void newDocument()}>
+          <FilePlus data-icon="inline-start" aria-hidden="true" />
+          New
+        </Button>
         <Button variant="ghost" size="sm" onclick={saveAction} disabled={!isDirty}>
           <Save data-icon="inline-start" aria-hidden="true" />
           Save
@@ -603,6 +662,10 @@
           Open a file from disk, or paste Markdown without creating one.
         </p>
         <div class="mt-6 flex justify-center gap-2">
+          <Button variant="outline" size="lg" onclick={() => void newDocument()}>
+            <FilePlus data-icon="inline-start" aria-hidden="true" />
+            New
+          </Button>
           <Button size="lg" onclick={openFile} disabled={isOpening}>
             <FolderOpen data-icon="inline-start" aria-hidden="true" />
             {isOpening ? "Opening…" : "Open file"}
