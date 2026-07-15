@@ -24,6 +24,13 @@
 
   import { Button } from "$lib/components/ui/button";
   import Editor from "$lib/components/Editor.svelte";
+  import {
+    MARKDOWN_EXTENSIONS,
+    fileName,
+    isDocumentDirty,
+    isMarkdownPath,
+    type DocumentSource,
+  } from "$lib/document-state";
 
   type OpenedDocument = {
     path: string;
@@ -36,15 +43,7 @@
     content: string;
   };
 
-  type DocumentSource =
-    | { kind: "file"; path: string }
-    | { kind: "clipboard" }
-    | { kind: "stdin" }
-    | { kind: "untitled" };
-
   type OpenRequest = { path: string | null; stdinPath: string | null; error: string | null };
-
-  const MARKDOWN_EXTENSIONS = ["md", "markdown", "mdown", "mkd"];
 
   let documentSource = $state<DocumentSource | null>(null);
   let renderedHtml = $state("");
@@ -126,13 +125,7 @@
     setScrollTop: (top: number) => void;
   } | null>(null);
 
-  // Documents without a saved form (clipboard, stdin, untitled) are
-  // dirty once they hold text; an empty untitled document is clean so
-  // an unused window closes without a prompt.
-  let isDirty = $derived(
-    documentSource !== null &&
-      (savedText === null ? sourceText.length > 0 : sourceText !== savedText),
-  );
+  let isDirty = $derived(isDocumentDirty(documentSource, sourceText, savedText));
   let isOpening = $state(false);
   let isPasting = $state(false);
   let isDragOver = $state(false);
@@ -173,15 +166,6 @@
         return "No file open";
     }
   });
-
-  function fileName(path: string): string {
-    return path.split(/[\\/]/).pop() ?? path;
-  }
-
-  function isMarkdownPath(path: string): boolean {
-    const extension = fileName(path).split(".").pop()?.toLowerCase() ?? "";
-    return MARKDOWN_EXTENSIONS.includes(extension);
-  }
 
   // Wraps every case-insensitive match in the rendered HTML with a
   // mark element. Operates on the parsed DOM, so text inside tags and
