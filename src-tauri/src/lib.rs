@@ -313,6 +313,104 @@ fn watch_document(
     Ok(())
 }
 
+/// The directory holding lightweight session state, created on demand.
+/// Lives in the per-app data directory, never beside documents.
+fn session_dir(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+    use tauri::Manager;
+
+    let dir = app.path().app_data_dir().ok()?;
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir)
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct WindowGeometry {
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+}
+
+/// The window geometry as of the last move or resize. Held in memory
+/// because at quit the window is already gone when `ExitRequested`
+/// fires, so it cannot be queried on the way out.
+struct LastGeometry(Mutex<Option<WindowGeometry>>);
+
+/// Snapshots the main window's position and size into memory. Called
+/// on every move and resize.
+fn record_window_geometry(app: &tauri::AppHandle) {
+    use tauri::Manager;
+
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    let (Ok(position), Ok(size)) = (window.outer_position(), window.inner_size()) else {
+        return;
+    };
+
+    *app.state::<LastGeometry>()
+        .0
+        .lock()
+        .expect("window geometry lock poisoned") = Some(WindowGeometry {
+        x: position.x,
+        y: position.y,
+        width: size.width,
+        height: size.height,
+    });
+}
+
+/// Writes the recorded window geometry to disk, called when the app
+/// exits.
+fn save_window_geometry(app: &tauri::AppHandle) {
+    use tauri::Manager;
+
+    let Some(dir) = session_dir(app) else { return };
+    let state = app.state::<LastGeometry>();
+    let guard = state.0.lock().expect("window geometry lock poisoned");
+    let Some(geometry) = guard.as_ref() else {
+        return;
+    };
+
+    if let Ok(json) = serde_json::to_string(geometry) {
+        let _ = std::fs::write(dir.join("window.json"), json);
+    }
+}
+
+/// Applies the recorded window geometry from the previous run. Called
+/// right after the window is created, before content shows.
+fn restore_window_geometry(app: &tauri::AppHandle, window: &tauri::WebviewWindow) {
+    let Some(dir) = session_dir(app) else { return };
+    let Ok(json) = std::fs::read_to_string(dir.join("window.json")) else {
+        return;
+    };
+    let Ok(geometry) = serde_json::from_str::<WindowGeometry>(&json) else {
+        return;
+    };
+
+    let _ = window.set_size(tauri::PhysicalSize::new(geometry.width, geometry.height));
+    let _ = window.set_position(tauri::PhysicalPosition::new(geometry.x, geometry.y));
+}
+
+/// Returns the saved frontend session, if any. The schema is owned by
+/// the frontend; the backend only stores it.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn load_session(app: tauri::AppHandle) -> Option<serde_json::Value> {
+    let dir = session_dir(&app)?;
+    let json = std::fs::read_to_string(dir.join("session.json")).ok()?;
+    serde_json::from_str(&json).ok()
+}
+
+/// Persists the frontend session. Saved debounced on every document,
+/// view, or scroll change so a quit needs no exit hook.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn save_session(app: tauri::AppHandle, session: serde_json::Value) -> Result<(), String> {
+    let dir = session_dir(&app).ok_or("No application data directory")?;
+    std::fs::write(dir.join("session.json"), session.to_string())
+        .map_err(|error| format!("Unable to save the session: {error}"))
+}
+
 /// Handles to the menu items whose enabled/checked state follows the
 /// document: Save, Save As, and Find need an open document; the View
 /// check items mirror the active view mode.
@@ -572,6 +670,41 @@ mod tests {
     }
 }
 
+/// Creates the main window and menu.
+///
+/// The window is created here instead of by the config (`create:
+/// false`) to attach the navigation policy: the webview may only load
+/// the app itself. External links open in the default browser; a click
+/// that slips past the frontend interception must not replace the app.
+fn setup_app(app: &tauri::App) -> tauri::Result<()> {
+    use tauri::Manager;
+
+    let config = app
+        .config()
+        .app
+        .windows
+        .first()
+        .expect("main window config missing")
+        .clone();
+    let window = tauri::WebviewWindowBuilder::from_config(app, &config)?
+        .on_navigation(|url| match url.scheme() {
+            "tauri" => true,
+            "http" | "https" if cfg!(debug_assertions) => {
+                url.host_str() == Some("localhost") || url.host_str() == Some("127.0.0.1")
+            }
+            _ => false,
+        })
+        .build()?;
+    restore_window_geometry(app.handle(), &window);
+    // An untouched window never fires a move or resize, so the initial
+    // geometry is recorded here.
+    record_window_geometry(app.handle());
+
+    let handles = build_menu(app)?;
+    app.manage(handles);
+    Ok(())
+}
+
 /// Starts the Markive desktop application, opening `launch_path` when
 /// one was given on the command line.
 ///
@@ -596,33 +729,7 @@ pub fn run(launch: Launch) {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
-            // The main window is created here instead of by the config
-            // (`create: false`) to attach the navigation policy: the
-            // webview may only load the app itself. External links open
-            // in the default browser; a click that slips past the
-            // frontend interception must not replace the app.
-            let config = app
-                .config()
-                .app
-                .windows
-                .first()
-                .expect("main window config missing")
-                .clone();
-            tauri::WebviewWindowBuilder::from_config(app, &config)?
-                .on_navigation(|url| match url.scheme() {
-                    "tauri" => true,
-                    "http" | "https" if cfg!(debug_assertions) => {
-                        url.host_str() == Some("localhost") || url.host_str() == Some("127.0.0.1")
-                    }
-                    _ => false,
-                })
-                .build()?;
-
-            let handles = build_menu(app)?;
-            {
-                use tauri::Manager;
-                app.manage(handles);
-            }
+            setup_app(app)?;
             Ok(())
         })
         // Custom menu items forward to the frontend, which owns the
@@ -653,6 +760,7 @@ pub fn run(launch: Launch) {
         }))
         .manage(RecentSaves(Mutex::new(std::collections::HashMap::new())))
         .manage(DocumentWatcher(Mutex::new(None)))
+        .manage(LastGeometry(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![
             open_document,
             open_stdin_document,
@@ -662,12 +770,25 @@ pub fn run(launch: Launch) {
             launch_document,
             save_file,
             watch_document,
-            set_menu_state
+            set_menu_state,
+            load_session,
+            save_session
         ])
         .build(tauri::generate_context!())
         .expect("failed to build Markive");
 
     app.run(|app, event| {
+        // Geometry is snapshotted on every move and resize and written
+        // on the way out — at exit the window itself is already gone.
+        match &event {
+            tauri::RunEvent::WindowEvent {
+                event: tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_),
+                ..
+            } => record_window_geometry(app),
+            tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => save_window_geometry(app),
+            _ => {}
+        }
+
         #[cfg(target_os = "macos")]
         if let tauri::RunEvent::Opened { urls } = &event {
             for url in urls {

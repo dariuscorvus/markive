@@ -99,6 +99,15 @@
   export function findPreviousMatch() {
     if (view) findPrevious(view);
   }
+
+  /** The editor's scroll offset, for session persistence. */
+  export function getScrollTop(): number {
+    return view?.scrollDOM.scrollTop ?? 0;
+  }
+
+  export function setScrollTop(top: number) {
+    if (view) view.scrollDOM.scrollTop = top;
+  }
 </script>
 
 <div bind:this={container} class="h-full min-h-0 overflow-hidden"></div>
