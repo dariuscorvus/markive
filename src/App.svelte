@@ -631,6 +631,56 @@
     return () => window.removeEventListener("click", handleLinkClick, { capture: true });
   });
 
+  // Native menu items forward here; the shortcuts they declare are
+  // consumed by the menu, so these actions have no keydown handlers.
+  function handleMenuAction(action: string) {
+    switch (action) {
+      case "new":
+        void newDocument();
+        break;
+      case "open":
+        void openFile();
+        break;
+      case "save":
+        saveAction();
+        break;
+      case "save-as":
+        void saveAsAction(true);
+        break;
+      case "find":
+        if (documentSource) openFind();
+        break;
+      case "view-rendered":
+        void setViewMode("rendered");
+        break;
+      case "view-source":
+        void setViewMode("source");
+        break;
+      case "view-split":
+        void setViewMode("split");
+        break;
+    }
+  }
+
+  onMount(() => {
+    const unlisten = listen<string>("menu-action", (event) => {
+      handleMenuAction(event.payload);
+    });
+    return () => {
+      void unlisten.then((stop) => stop());
+    };
+  });
+
+  // Menu enabled/checked state follows the document.
+  $effect(() => {
+    void invoke("set_menu_state", {
+      hasDocument: documentSource !== null,
+      viewMode,
+    }).catch(() => {
+      // A menu that lags the document state is not worth surfacing.
+    });
+  });
+
   // Closing the window guards unsaved changes. Quit (cmd+Q) is
   // deliberately unguarded, following the macOS document model; #15
   // makes quit lossless by restoring the session including unsaved
@@ -680,32 +730,16 @@
     }
   }
 
+  // Shortcuts without a native menu item. Everything the menu declares
+  // (⌘N, ⌘O, ⌘S, ⇧⌘S, ⌘F, ⌘1–3) arrives as a menu-action event instead.
   function handleKeydown(event: KeyboardEvent) {
     if (!(event.metaKey || event.ctrlKey)) return;
 
     const key = event.key.toLowerCase();
 
-    if (key === "n") {
-      event.preventDefault();
-      void newDocument();
-      return;
-    }
-
-    if (key === "f" && documentSource) {
-      event.preventDefault();
-      openFind();
-      return;
-    }
-
     if (key === "g" && findOpen) {
       event.preventDefault();
       findStep(event.shiftKey ? -1 : 1);
-      return;
-    }
-
-    if (key === "s" && documentSource) {
-      event.preventDefault();
-      void saveAsAction(event.shiftKey);
       return;
     }
 
@@ -715,20 +749,9 @@
       return;
     }
 
-    if (documentSource && (key === "1" || key === "2" || key === "3")) {
-      event.preventDefault();
-      void setViewMode((["rendered", "source", "split"] as const)[Number(key) - 1]);
-      return;
-    }
-
-    // Inside the editor, ⌘V pastes text and ⌘O is the only global
-    // shortcut that still applies.
+    // Inside the editor, ⌘V pastes text; outside it opens the
+    // clipboard as a document.
     const inEditor = (event.target as Element).closest(".cm-editor") !== null;
-
-    if (key === "o") {
-      event.preventDefault();
-      void openFile();
-    }
 
     if (key === "v" && !inEditor) {
       event.preventDefault();

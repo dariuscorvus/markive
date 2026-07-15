@@ -313,6 +313,139 @@ fn watch_document(
     Ok(())
 }
 
+/// Handles to the menu items whose enabled/checked state follows the
+/// document: Save, Save As, and Find need an open document; the View
+/// check items mirror the active view mode.
+struct MenuHandles {
+    save: tauri::menu::MenuItem<tauri::Wry>,
+    save_as: tauri::menu::MenuItem<tauri::Wry>,
+    find: tauri::menu::MenuItem<tauri::Wry>,
+    rendered: tauri::menu::CheckMenuItem<tauri::Wry>,
+    source: tauri::menu::CheckMenuItem<tauri::Wry>,
+    split: tauri::menu::CheckMenuItem<tauri::Wry>,
+}
+
+/// Syncs menu item state with the frontend's document state. Called on
+/// every document or view-mode change.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn set_menu_state(
+    handles: tauri::State<'_, MenuHandles>,
+    has_document: bool,
+    view_mode: String,
+) -> Result<(), String> {
+    let apply = || -> tauri::Result<()> {
+        handles.save.set_enabled(has_document)?;
+        handles.save_as.set_enabled(has_document)?;
+        handles.find.set_enabled(has_document)?;
+
+        for (item, mode) in [
+            (&handles.rendered, "rendered"),
+            (&handles.source, "source"),
+            (&handles.split, "split"),
+        ] {
+            item.set_enabled(has_document)?;
+            item.set_checked(has_document && view_mode == mode)?;
+        }
+        Ok(())
+    };
+
+    apply().map_err(|error| format!("Unable to update the menu: {error}"))
+}
+
+/// Builds the application menu and returns the stateful item handles.
+fn build_menu(app: &tauri::App) -> tauri::Result<MenuHandles> {
+    use tauri::menu::{CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder, SubmenuBuilder};
+
+    let new_item = MenuItemBuilder::with_id("new", "New")
+        .accelerator("CmdOrCtrl+N")
+        .build(app)?;
+    let open = MenuItemBuilder::with_id("open", "Open…")
+        .accelerator("CmdOrCtrl+O")
+        .build(app)?;
+    let save = MenuItemBuilder::with_id("save", "Save")
+        .accelerator("CmdOrCtrl+S")
+        .enabled(false)
+        .build(app)?;
+    let save_as = MenuItemBuilder::with_id("save-as", "Save As…")
+        .accelerator("Shift+CmdOrCtrl+S")
+        .enabled(false)
+        .build(app)?;
+    let find = MenuItemBuilder::with_id("find", "Find…")
+        .accelerator("CmdOrCtrl+F")
+        .enabled(false)
+        .build(app)?;
+    let rendered = CheckMenuItemBuilder::with_id("view-rendered", "Rendered")
+        .accelerator("CmdOrCtrl+1")
+        .enabled(false)
+        .build(app)?;
+    let source = CheckMenuItemBuilder::with_id("view-source", "Source")
+        .accelerator("CmdOrCtrl+2")
+        .enabled(false)
+        .build(app)?;
+    let split = CheckMenuItemBuilder::with_id("view-split", "Split")
+        .accelerator("CmdOrCtrl+3")
+        .enabled(false)
+        .build(app)?;
+
+    let app_menu = SubmenuBuilder::new(app, "Markive")
+        .about(None)
+        .separator()
+        .services()
+        .separator()
+        .hide()
+        .hide_others()
+        .show_all()
+        .separator()
+        .quit()
+        .build()?;
+    let file_menu = SubmenuBuilder::new(app, "File")
+        .item(&new_item)
+        .item(&open)
+        .separator()
+        .item(&save)
+        .item(&save_as)
+        .separator()
+        .close_window()
+        .build()?;
+    let edit_menu = SubmenuBuilder::new(app, "Edit")
+        .undo()
+        .redo()
+        .separator()
+        .cut()
+        .copy()
+        .paste()
+        .select_all()
+        .separator()
+        .item(&find)
+        .build()?;
+    let view_menu = SubmenuBuilder::new(app, "View")
+        .item(&rendered)
+        .item(&source)
+        .item(&split)
+        .separator()
+        .fullscreen()
+        .build()?;
+    let window_menu = SubmenuBuilder::new(app, "Window")
+        .minimize()
+        .maximize()
+        .build()?;
+
+    let menu = MenuBuilder::new(app)
+        .items(&[&app_menu, &file_menu, &edit_menu, &view_menu, &window_menu])
+        .build()?;
+    app.set_menu(menu)?;
+
+    Ok(MenuHandles {
+        save,
+        save_as,
+        find,
+        rendered,
+        source,
+        split,
+    })
+}
+
 fn read_clipboard_files() -> Result<Vec<String>, String> {
     use clipboard_rs::{Clipboard, ClipboardContext};
 
@@ -456,7 +589,32 @@ pub fn run(launch: Launch) {
                     _ => false,
                 })
                 .build()?;
+
+            let handles = build_menu(app)?;
+            {
+                use tauri::Manager;
+                app.manage(handles);
+            }
             Ok(())
+        })
+        // Custom menu items forward to the frontend, which owns the
+        // document state and the actions.
+        .on_menu_event(|app, event| {
+            use tauri::Emitter;
+
+            let id = event.id().as_ref();
+            if matches!(
+                id,
+                "new" | "open"
+                    | "save"
+                    | "save-as"
+                    | "find"
+                    | "view-rendered"
+                    | "view-source"
+                    | "view-split"
+            ) {
+                let _ = app.emit("menu-action", id);
+            }
         })
         .manage(Mutex::new(LaunchState {
             pending: OpenRequest::from_launch(launch),
@@ -472,7 +630,8 @@ pub fn run(launch: Launch) {
             clipboard_files,
             launch_document,
             save_file,
-            watch_document
+            watch_document,
+            set_menu_state
         ])
         .build(tauri::generate_context!())
         .expect("failed to build Markive");
