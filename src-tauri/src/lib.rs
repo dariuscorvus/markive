@@ -203,11 +203,114 @@ async fn open_stdin_document(app: tauri::AppHandle, path: String) -> Result<Stdi
     })
 }
 
-/// Saves document content through markive-core's atomic write.
+/// Saves document content through markive-core's atomic write. The
+/// save is recorded first so the file watcher ignores the resulting
+/// filesystem events.
 #[tauri::command]
-async fn save_file(path: String, content: String) -> Result<(), String> {
+async fn save_file(
+    saves: tauri::State<'_, RecentSaves>,
+    path: String,
+    content: String,
+) -> Result<(), String> {
+    saves.record(&path);
     markive_core::save_document(std::path::Path::new(&path), &content)
         .map_err(|error| format!("Unable to save {path}: {error}"))
+}
+
+/// Timestamps of Markive's own writes, so watcher events they cause
+/// are not reported back as external changes.
+struct RecentSaves(Mutex<std::collections::HashMap<String, std::time::Instant>>);
+
+/// External editors and our own atomic rename produce event bursts;
+/// everything within this window of an own save is ours.
+const SELF_SAVE_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
+
+impl RecentSaves {
+    fn record(&self, path: &str) {
+        self.0
+            .lock()
+            .expect("recent saves lock poisoned")
+            .insert(canonical_string(path), std::time::Instant::now());
+    }
+
+    fn is_own_save(&self, path: &str) -> bool {
+        self.0
+            .lock()
+            .expect("recent saves lock poisoned")
+            .get(&canonical_string(path))
+            .is_some_and(|saved| saved.elapsed() < SELF_SAVE_WINDOW)
+    }
+}
+
+/// Canonicalizes when possible so watcher event paths and save paths
+/// compare equal despite symlinks like /tmp vs /private/tmp.
+fn canonical_string(path: &str) -> String {
+    std::fs::canonicalize(path)
+        .map_or_else(|_| path.to_owned(), |p| p.to_string_lossy().into_owned())
+}
+
+/// The active document watcher; replaced when another document opens.
+struct DocumentWatcher(Mutex<Option<notify::RecommendedWatcher>>);
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FileChange {
+    kind: &'static str,
+}
+
+/// Watches the document at `path` for external changes, replacing any
+/// previous watch. `None` stops watching (clipboard, stdin, untitled).
+/// Events arrive in the frontend as `document-file-changed` with kind
+/// `modified` or `removed`, decided by whether the file still exists —
+/// editors that save atomically report renames, not writes.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn watch_document(
+    app: tauri::AppHandle,
+    watcher_state: tauri::State<'_, DocumentWatcher>,
+    path: Option<String>,
+) -> Result<(), String> {
+    use notify::Watcher;
+
+    let mut guard = watcher_state
+        .0
+        .lock()
+        .expect("document watcher lock poisoned");
+    *guard = None;
+
+    let Some(path) = path else { return Ok(()) };
+
+    let target = path.clone();
+    let handle = app.clone();
+    let mut watcher = notify::recommended_watcher(move |result: notify::Result<notify::Event>| {
+        use tauri::{Emitter, Manager};
+
+        let Ok(event) = result else { return };
+        if !matches!(
+            event.kind,
+            notify::EventKind::Modify(_) | notify::EventKind::Remove(_) | notify::EventKind::Create(_)
+        ) {
+            return;
+        }
+        if handle.state::<RecentSaves>().is_own_save(&target) {
+            return;
+        }
+
+        let kind = if std::path::Path::new(&target).is_file() {
+            "modified"
+        } else {
+            "removed"
+        };
+        let _ = handle.emit("document-file-changed", FileChange { kind });
+    })
+    .map_err(|error| format!("Unable to watch {path}: {error}"))?;
+
+    watcher
+        .watch(std::path::Path::new(&path), notify::RecursiveMode::NonRecursive)
+        .map_err(|error| format!("Unable to watch {path}: {error}"))?;
+    *guard = Some(watcher);
+
+    Ok(())
 }
 
 fn read_clipboard_files() -> Result<Vec<String>, String> {
@@ -359,6 +462,8 @@ pub fn run(launch: Launch) {
             pending: OpenRequest::from_launch(launch),
             frontend_ready: false,
         }))
+        .manage(RecentSaves(Mutex::new(std::collections::HashMap::new())))
+        .manage(DocumentWatcher(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![
             open_document,
             open_stdin_document,
@@ -366,7 +471,8 @@ pub fn run(launch: Launch) {
             render_source,
             clipboard_files,
             launch_document,
-            save_file
+            save_file,
+            watch_document
         ])
         .build(tauri::generate_context!())
         .expect("failed to build Markive");

@@ -51,6 +51,9 @@
   let viewMode = $state<"rendered" | "source" | "split">("rendered");
   let errorMessage = $state<string | null>(null);
   let confirmResolve = $state<((choice: "save" | "discard" | "cancel") => void) | null>(null);
+  // External file state: the disk copy changed under local edits, or
+  // the file disappeared.
+  let fileConflict = $state<"conflict" | "missing" | null>(null);
 
   // Documents without a saved form (clipboard, stdin, untitled) are
   // dirty once they hold text; an empty untitled document is clean so
@@ -129,15 +132,26 @@
     return parsed.body.innerHTML;
   }
 
-  async function openDocumentAtPath(path: string) {
+  async function openDocumentAtPath(path: string, preserveView = false) {
     const document = await invoke<OpenedDocument>("open_document", { path });
 
     documentSource = { kind: "file", path: document.path };
     renderedHtml = convertLocalImageSources(document.html);
     sourceText = document.content;
     savedText = document.content;
-    viewMode = "rendered";
+    fileConflict = null;
+    if (!preserveView) viewMode = "rendered";
   }
+
+  // Keep the backend watcher pointed at the current file. Pathless
+  // documents stop the watch.
+  $effect(() => {
+    const path = documentSource?.kind === "file" ? documentSource.path : null;
+    void invoke("watch_document", { path }).catch(() => {
+      // A file that cannot be watched still works; changes just are
+      // not detected.
+    });
+  });
 
   /// Asks what to do with unsaved changes. Resolved by the modal.
   function confirmLoseChanges(): Promise<"save" | "discard" | "cancel"> {
@@ -168,6 +182,7 @@
     const pathChanged = documentSource?.kind !== "file" || documentSource.path !== path;
     documentSource = { kind: "file", path };
     savedText = sourceText;
+    fileConflict = null;
 
     // A new location changes the base directory; relative images and
     // links resolve against it from now on.
@@ -180,6 +195,7 @@
     if (!(await canDiscardDocument())) return;
 
     documentSource = { kind: "untitled" };
+    fileConflict = null;
     sourceText = "";
     savedText = null;
     renderedHtml = "";
@@ -331,6 +347,7 @@
         baseDir: null,
       });
 
+      fileConflict = null;
       documentSource = { kind: "clipboard" };
       renderedHtml = convertLocalImageSources(html);
       sourceText = clipboardText;
@@ -358,6 +375,7 @@
         const stdinDocument = await invoke<StdinDocument>("open_stdin_document", {
           path: request.stdinPath,
         });
+        fileConflict = null;
         documentSource = { kind: "stdin" };
         renderedHtml = convertLocalImageSources(stdinDocument.html);
         sourceText = stdinDocument.content;
@@ -422,6 +440,48 @@
       errorMessage = error instanceof Error ? error.message : String(error);
     }
   })();
+
+  // External changes to the open file, reported by the backend watcher.
+  async function handleFileChange(kind: string) {
+    if (documentSource?.kind !== "file") return;
+
+    if (kind === "removed") {
+      fileConflict = "missing";
+      // The disk copy is gone; the buffer is the only copy and needs
+      // saving again.
+      savedText = null;
+      return;
+    }
+
+    if (isDirty) {
+      fileConflict = "conflict";
+      return;
+    }
+
+    try {
+      await openDocumentAtPath(documentSource.path, true);
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  onMount(() => {
+    const unlisten = listen<{ kind: string }>("document-file-changed", (event) => {
+      void handleFileChange(event.payload.kind);
+    });
+    return () => {
+      void unlisten.then((stop) => stop());
+    };
+  });
+
+  async function reloadFromDisk() {
+    if (documentSource?.kind !== "file") return;
+    try {
+      await openDocumentAtPath(documentSource.path, true);
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : String(error);
+    }
+  }
 
   // The webview must never navigate: every link click is intercepted
   // and routed by target type. Registered on window in the capture
@@ -546,7 +606,7 @@
 <svelte:window onkeydown={handleKeydown} />
 
 <main
-  class={`grid min-h-screen grid-rows-[2.75rem_1fr] bg-background text-foreground ${isDragOver ? "ring-2 ring-inset ring-ring" : ""}`}
+  class={`grid min-h-screen grid-rows-[2.75rem_auto_1fr] bg-background text-foreground ${isDragOver ? "ring-2 ring-inset ring-ring" : ""}`}
 >
   <header class="path-rail flex items-center justify-between gap-4 border-b border-border px-4">
     <div class="flex min-w-0 items-center gap-2 font-mono text-xs text-muted-foreground">
@@ -606,6 +666,34 @@
       </div>
     {/if}
   </header>
+
+  {#if fileConflict}
+    <div
+      class="flex items-center justify-between gap-4 border-b border-border bg-secondary px-4 py-2"
+      role="alert"
+    >
+      <p class="min-w-0 truncate text-sm">
+        {fileConflict === "missing"
+          ? "The file was deleted or moved on disk. Your text is only in this window until you save it."
+          : "The file changed on disk while you have unsaved edits."}
+      </p>
+      <div class="flex shrink-0 items-center gap-1">
+        {#if fileConflict === "conflict"}
+          <Button variant="outline" size="sm" onclick={() => void reloadFromDisk()}>
+            Reload from Disk
+          </Button>
+        {/if}
+        <Button variant="outline" size="sm" onclick={() => void saveAsAction(true)}>
+          Save As
+        </Button>
+        <Button variant="ghost" size="sm" onclick={() => (fileConflict = null)}>
+          Keep Editing
+        </Button>
+      </div>
+    </div>
+  {:else}
+    <div></div>
+  {/if}
 
   {#if documentSource}
     {#if viewMode === "source"}
