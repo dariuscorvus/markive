@@ -16,15 +16,26 @@
   let {
     value,
     dark = false,
+    fontSize = 14,
+    lineWrap = true,
     onchange,
   }: {
     value: string;
     dark?: boolean;
+    fontSize?: number;
+    lineWrap?: boolean;
     onchange: (value: string) => void;
   } = $props();
 
-  // Swaps the editor theme in place, without resetting editor state.
+  // Compartments swap settings in place, without resetting editor
+  // state — preferences apply to the open document immediately.
   const theme = new Compartment();
+  const wrapping = new Compartment();
+  const sizing = new Compartment();
+
+  function sizeTheme(size: number) {
+    return EditorView.theme({ "&": { fontSize: `${size}px` } });
+  }
 
   let container: HTMLDivElement;
   let view: EditorView | undefined;
@@ -41,7 +52,8 @@
         search(),
         markdown(),
         theme.of(dark ? oneDark : []),
-        EditorView.lineWrapping,
+        wrapping.of(lineWrap ? EditorView.lineWrapping : []),
+        sizing.of(sizeTheme(fontSize)),
         ...(text.includes("\r\n") ? [EditorState.lineSeparator.of("\r\n")] : []),
         EditorView.updateListener.of((update) => {
           if (update.docChanged) {
@@ -49,7 +61,7 @@
           }
         }),
         EditorView.theme({
-          "&": { height: "100%", fontSize: "0.875rem" },
+          "&": { height: "100%" },
           ".cm-scroller": { fontFamily: "var(--font-mono, monospace)" },
           "&.cm-focused": { outline: "none" },
         }),
@@ -65,6 +77,15 @@
 
   $effect(() => {
     view?.dispatch({ effects: theme.reconfigure(dark ? oneDark : []) });
+  });
+
+  $effect(() => {
+    view?.dispatch({
+      effects: [
+        wrapping.reconfigure(lineWrap ? EditorView.lineWrapping : []),
+        sizing.reconfigure(sizeTheme(fontSize)),
+      ],
+    });
   });
 
   // A new document (different text than the editor holds) resets the
