@@ -119,6 +119,7 @@ struct OpenedDocument {
     path: String,
     html: String,
     content: String,
+    base_dir: String,
 }
 
 /// Grants the asset protocol access to exactly the images a rendered
@@ -126,10 +127,34 @@ struct OpenedDocument {
 /// view; it should not fail rendering.
 fn grant_image_access(app: &tauri::AppHandle, rendered: &markive_core::RenderedDocument) {
     use tauri::Manager;
+    use std::io::Write;
 
     let scope = app.asset_protocol_scope();
+    let mut log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/tmp/markive_debug.log")
+        .ok();
+
     for image in rendered.local_images() {
-        let _ = scope.allow_file(image);
+        let msg = format!("[grant_image_access] granting: {}\n", image.display());
+        if let Some(ref mut f) = log {
+            let _ = f.write_all(msg.as_bytes());
+        }
+        match scope.allow_file(image) {
+            Ok(_) => {
+                let ok_msg = format!("[grant_image_access]   ✓ granted\n");
+                if let Some(ref mut f) = log {
+                    let _ = f.write_all(ok_msg.as_bytes());
+                }
+            }
+            Err(e) => {
+                let err_msg = format!("[grant_image_access]   ✗ error: {}\n", e);
+                if let Some(ref mut f) = log {
+                    let _ = f.write_all(err_msg.as_bytes());
+                }
+            }
+        }
     }
 }
 
@@ -153,6 +178,7 @@ async fn open_document(app: tauri::AppHandle, path: String) -> Result<OpenedDocu
         path: canonical.to_string_lossy().into_owned(),
         html: rendered.html().to_owned(),
         content: document.content().to_owned(),
+        base_dir: base_dir.to_string_lossy().into_owned(),
     })
 }
 

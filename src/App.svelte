@@ -29,6 +29,7 @@
     path: string;
     html: string;
     content: string;
+    baseDir: string;
   };
 
   type StdinDocument = {
@@ -240,15 +241,25 @@
 
   // The backend resolves local image sources to absolute filesystem
   // paths; the webview can only load them through the asset protocol.
-  function convertLocalImageSources(html: string): string {
+  function convertLocalImageSources(html: string, baseDir?: string): string {
     const parsed = new DOMParser().parseFromString(html, "text/html");
 
     for (const image of parsed.querySelectorAll("img")) {
-      const src = image.getAttribute("src");
-      if (!src?.startsWith("/")) continue;
+      let src = image.getAttribute("src");
+      if (!src) continue;
 
       try {
-        image.setAttribute("src", convertFileSrc(decodeURIComponent(src)));
+        // If baseDir is provided and src is relative, resolve it to absolute
+        if (baseDir && !src.startsWith("/") && !src.includes("://")) {
+          // Simple path join: remove leading ./ and join with baseDir
+          const normalized = src.replace(/^\.\//, "");
+          src = baseDir.endsWith("/") ? baseDir + normalized : baseDir + "/" + normalized;
+        }
+
+        // Convert absolute paths to asset:// URLs
+        if (src.startsWith("/")) {
+          image.setAttribute("src", convertFileSrc(decodeURIComponent(src)));
+        }
       } catch {
         // Malformed percent-encoding: leave the source as-is; the
         // image stays a broken reference with its alt text.
@@ -262,7 +273,7 @@
     const document = await invoke<OpenedDocument>("open_document", { path });
 
     documentSource = { kind: "file", path: document.path };
-    renderedHtml = convertLocalImageSources(document.html);
+    renderedHtml = convertLocalImageSources(document.html, document.baseDir);
     sourceText = document.content;
     savedText = document.content;
     fileConflict = null;
@@ -365,7 +376,7 @@
       markdown: sourceText,
       baseDir,
     });
-    renderedHtml = convertLocalImageSources(html);
+    renderedHtml = convertLocalImageSources(html, baseDir ?? undefined);
   }
 
   // In Split mode edits re-render live, debounced so a keystroke burst

@@ -496,6 +496,17 @@ mod tests {
     }
 
     #[test]
+    fn resolves_dot_slash_relative_images() {
+        let rendered = render_document("![Icon](./icon.png)", Some(Path::new("/Users/darius/repos/iqualize")));
+
+        assert!(rendered.html().contains("src=\"/Users/darius/repos/iqualize/icon.png\""));
+        assert_eq!(
+            rendered.local_images(),
+            [PathBuf::from("/Users/darius/repos/iqualize/icon.png")]
+        );
+    }
+
+    #[test]
     fn resolves_parent_traversal_lexically() {
         let rendered = render_document("![up](../shared/./a.png)", Some(Path::new("/docs/notes")));
 
