@@ -101,6 +101,19 @@
     node.focus();
   }
 
+  // Command line tool installation, reported inline in Settings.
+  let cliStatus = $state<string | null>(null);
+
+  async function installCli() {
+    cliStatus = null;
+    try {
+      await invoke<string>("install_cli");
+      cliStatus = "Installed. Open a new terminal window to use `markive`.";
+    } catch (error) {
+      cliStatus = error instanceof Error ? error.message : String(error);
+    }
+  }
+
   // The number input can hold the empty state mid-edit; the editor
   // always gets a usable size.
   let editorFontSize = $derived(
@@ -1302,6 +1315,17 @@
           <input type="checkbox" bind:checked={preferences.lineWrap} />
           <span>Wrap long lines in the editor</span>
         </label>
+        <div class="grid gap-1.5 border-t border-border pt-4">
+          <span class="text-muted-foreground">Command line</span>
+          <div>
+            <Button variant="outline" size="sm" onclick={() => void installCli()}>
+              Install Command Line Tool
+            </Button>
+          </div>
+          {#if cliStatus}
+            <p class="text-xs text-muted-foreground" role="status">{cliStatus}</p>
+          {/if}
+        </div>
       </div>
       <div class="mt-6 flex justify-end">
         <Button size="sm" onclick={() => (settingsOpen = false)}>Done</Button>
