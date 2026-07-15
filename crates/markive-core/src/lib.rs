@@ -147,6 +147,11 @@ fn sanitize(html: &str) -> String {
     builder
         .add_tags(["input"])
         .add_tag_attributes("input", ["checked", "disabled", "type"]);
+    // GitHub keeps the legacy `align` attribute; READMEs rely on it to
+    // center images and badges.
+    for tag in ["p", "div", "td", "th"] {
+        builder.add_tag_attributes(tag, ["align"]);
+    }
     for heading in ["h1", "h2", "h3", "h4", "h5", "h6"] {
         builder.add_tag_attributes(heading, ["id"]);
     }
@@ -228,32 +233,9 @@ pub fn render_markdown(markdown: &str) -> String {
 /// sources have nothing to resolve against and pass through untouched.
 #[must_use]
 pub fn render_document(markdown: &str, base_dir: Option<&Path>) -> RenderedDocument {
-    let mut local_images = Vec::new();
-
     let events = events_with_heading_ids(markdown)
         .into_iter()
         .map(|event| match event {
-            Event::Start(Tag::Image {
-                link_type,
-                dest_url,
-                title,
-                id,
-            }) => {
-                let dest_url = match resolve_local_target(&dest_url, base_dir) {
-                    Some(path) => {
-                        let resolved = path.to_string_lossy().into_owned();
-                        local_images.push(path);
-                        resolved.into()
-                    }
-                    None => dest_url,
-                };
-                Event::Start(Tag::Image {
-                    link_type,
-                    dest_url,
-                    title,
-                    id,
-                })
-            }
             // Local link targets become absolute so the app can open
             // them regardless of its working directory. Anchors and
             // URLs pass through.
@@ -284,10 +266,70 @@ pub fn render_document(markdown: &str, base_dir: Option<&Path>) -> RenderedDocum
     let mut html = String::new();
     pulldown_cmark::html::push_html(&mut html, events);
 
-    RenderedDocument {
-        html: sanitize(&html),
-        local_images,
+    let (html, local_images) = resolve_image_sources(&sanitize(&html), base_dir);
+
+    RenderedDocument { html, local_images }
+}
+
+/// Resolves every `<img src>` in sanitized HTML to an absolute path.
+///
+/// Runs on ammonia's output — lowercase tags, double-quoted attribute
+/// values — so it covers images written as raw HTML in the Markdown,
+/// not just Markdown image syntax. Remote sources pass through; see
+/// [`resolve_local_target`].
+fn resolve_image_sources(html: &str, base_dir: Option<&Path>) -> (String, Vec<PathBuf>) {
+    let mut output = String::with_capacity(html.len());
+    let mut local_images = Vec::new();
+    let mut rest = html;
+
+    while let Some(tag_start) = rest.find("<img") {
+        let tag = &rest[tag_start..];
+        let Some(tag_len) = tag.find('>') else { break };
+
+        let src = tag[..tag_len].find(" src=\"").and_then(|attr| {
+            let value_start = tag_start + attr + " src=\"".len();
+            let value_len = rest[value_start..tag_start + tag_len].find('"')?;
+            Some((value_start, value_len))
+        });
+
+        if let Some((value_start, value_len)) = src {
+            let value = decode_entities(&rest[value_start..value_start + value_len]);
+            output.push_str(&rest[..value_start]);
+            if let Some(path) = resolve_local_target(&value, base_dir) {
+                output.push_str(&encode_attribute(&path.to_string_lossy()));
+                if !local_images.contains(&path) {
+                    local_images.push(path);
+                }
+            } else {
+                output.push_str(&rest[value_start..value_start + value_len]);
+            }
+            rest = &rest[value_start + value_len..];
+        } else {
+            output.push_str(&rest[..tag_start + tag_len]);
+            rest = &rest[tag_start + tag_len..];
+        }
     }
+
+    output.push_str(rest);
+    (output, local_images)
+}
+
+/// Decodes the entities ammonia emits in attribute values.
+fn decode_entities(value: &str) -> String {
+    value
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&amp;", "&")
+}
+
+/// Escapes a resolved path for use in a double-quoted attribute value.
+fn encode_attribute(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('"', "&quot;")
 }
 
 /// True when `src` names a remote or otherwise non-filesystem target:
@@ -534,6 +576,50 @@ mod tests {
         let rendered = render_document("![shot](my%20shot.png)", Some(Path::new("/docs")));
 
         assert_eq!(rendered.local_images(), [PathBuf::from("/docs/my shot.png")]);
+    }
+
+    #[test]
+    fn resolves_raw_html_images_against_the_base_directory() {
+        let markdown = "<p align=\"center\">\n  <img src=\"./icon.png\" width=\"128\" alt=\"icon\">\n</p>\n";
+
+        let rendered = render_document(markdown, Some(Path::new("/repo")));
+
+        assert!(rendered.html().contains("src=\"/repo/icon.png\""));
+        assert_eq!(rendered.local_images(), [PathBuf::from("/repo/icon.png")]);
+    }
+
+    #[test]
+    fn keeps_the_align_attribute_on_block_elements() {
+        let rendered = render_document(
+            "<p align=\"center\"><img src=\"/a.png\"></p>",
+            Some(Path::new("/repo")),
+        );
+
+        assert!(rendered.html().contains("<p align=\"center\">"));
+    }
+
+    #[test]
+    fn leaves_remote_raw_html_images_untouched() {
+        let rendered = render_document(
+            "<img src=\"https://example.com/a.png?x=1&y=2\">",
+            Some(Path::new("/repo")),
+        );
+
+        assert!(
+            rendered
+                .html()
+                .contains("src=\"https://example.com/a.png?x=1&amp;y=2\"")
+        );
+        assert!(rendered.local_images().is_empty());
+    }
+
+    #[test]
+    fn reports_an_image_used_in_markdown_and_raw_html_once() {
+        let markdown = "![a](a.png)\n\n<img src=\"a.png\">\n";
+
+        let rendered = render_document(markdown, Some(Path::new("/repo")));
+
+        assert_eq!(rendered.local_images(), [PathBuf::from("/repo/a.png")]);
     }
 
     #[test]
