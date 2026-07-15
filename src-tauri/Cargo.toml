@@ -20,6 +20,7 @@ serde = { version = "1.0.228", features = ["derive"] }
 clipboard-rs = { version = "0.3.5", default-features = false }
 tauri-plugin-single-instance = "2.4.3"
 tauri-plugin-opener = "2.5.4"
+notify = "8.2.0"
 
 [lints]
 workspace = true
