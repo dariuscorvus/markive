@@ -464,6 +464,7 @@ fn set_menu_state(
 }
 
 /// Builds the application menu and returns the stateful item handles.
+#[allow(clippy::too_many_lines)]
 fn build_menu(app: &tauri::App) -> tauri::Result<MenuHandles> {
     use tauri::menu::{CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 
@@ -498,8 +499,14 @@ fn build_menu(app: &tauri::App) -> tauri::Result<MenuHandles> {
         .enabled(false)
         .build(app)?;
 
+    let settings = MenuItemBuilder::with_id("settings", "Settings…")
+        .accelerator("CmdOrCtrl+,")
+        .build(app)?;
+
     let app_menu = SubmenuBuilder::new(app, "Markive")
         .about(None)
+        .separator()
+        .item(&settings)
         .separator()
         .services()
         .separator()
@@ -750,6 +757,7 @@ pub fn run(launch: Launch) {
                     | "theme-light"
                     | "theme-dark"
                     | "theme-system"
+                    | "settings"
             ) {
                 let _ = app.emit("menu-action", id);
             }

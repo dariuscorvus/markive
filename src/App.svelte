@@ -64,6 +64,48 @@
   let isDark = $derived(
     themePreference === "dark" || (themePreference === "system" && systemDark),
   );
+
+  // Reading and editing preferences, persisted app-wide — never beside
+  // documents.
+  type ProseWidth = "narrow" | "default" | "wide";
+  type Preferences = {
+    proseWidth: ProseWidth;
+    editorFontSize: number;
+    lineWrap: boolean;
+  };
+  const defaultPreferences: Preferences = {
+    proseWidth: "default",
+    editorFontSize: 14,
+    lineWrap: true,
+  };
+  const PROSE_WIDTHS: Record<ProseWidth, string> = {
+    narrow: "40rem",
+    default: "46rem",
+    wide: "60rem",
+  };
+
+  function loadPreferences(): Preferences {
+    try {
+      const stored: unknown = JSON.parse(localStorage.getItem("markive-preferences") ?? "");
+      return { ...defaultPreferences, ...(stored as Partial<Preferences>) };
+    } catch {
+      return { ...defaultPreferences };
+    }
+  }
+
+  let preferences = $state<Preferences>(loadPreferences());
+  let settingsOpen = $state(false);
+
+  // The number input can hold the empty state mid-edit; the editor
+  // always gets a usable size.
+  let editorFontSize = $derived(
+    Math.min(24, Math.max(11, Number(preferences.editorFontSize) || 14)),
+  );
+  let proseWidth = $derived(PROSE_WIDTHS[preferences.proseWidth] ?? PROSE_WIDTHS.default);
+
+  $effect(() => {
+    localStorage.setItem("markive-preferences", JSON.stringify(preferences));
+  });
   let errorMessage = $state<string | null>(null);
   let confirmResolve = $state<((choice: "save" | "discard" | "cancel") => void) | null>(null);
   // External file state: the disk copy changed under local edits, or
@@ -788,6 +830,9 @@
       case "theme-system":
         themePreference = "system";
         break;
+      case "settings":
+        settingsOpen = true;
+        break;
     }
   }
 
@@ -888,6 +933,11 @@
   // Shortcuts without a native menu item. Everything the menu declares
   // (⌘N, ⌘O, ⌘S, ⇧⌘S, ⌘F, ⌘1–3) arrives as a menu-action event instead.
   function handleKeydown(event: KeyboardEvent) {
+    if (event.key === "Escape" && settingsOpen) {
+      settingsOpen = false;
+      return;
+    }
+
     if (!(event.metaKey || event.ctrlKey)) return;
 
     const key = event.key.toLowerCase();
@@ -1064,7 +1114,14 @@
         {:else}
           <div></div>
         {/if}
-        <Editor bind:this={editorRef} value={sourceText} dark={isDark} onchange={handleEdit} />
+        <Editor
+              bind:this={editorRef}
+              value={sourceText}
+              dark={isDark}
+              fontSize={editorFontSize}
+              lineWrap={preferences.lineWrap}
+              onchange={handleEdit}
+            />
       </section>
     {:else if viewMode === "split"}
       <section class="grid min-h-0 grid-rows-[auto_1fr] bg-card" aria-label={`Split view of ${documentName}`}>
@@ -1077,10 +1134,17 @@
         {/if}
         <div class="grid min-h-0 grid-cols-2">
           <div class="min-h-0 border-r border-border">
-            <Editor bind:this={editorRef} value={sourceText} dark={isDark} onchange={handleEdit} />
+            <Editor
+              bind:this={editorRef}
+              value={sourceText}
+              dark={isDark}
+              fontSize={editorFontSize}
+              lineWrap={preferences.lineWrap}
+              onchange={handleEdit}
+            />
           </div>
           <div class="min-h-0 overflow-auto" bind:this={renderedScrollEl}>
-            <article class="markdown mx-auto w-full max-w-[46rem] px-8 py-14">
+            <article class="markdown mx-auto w-full px-8 py-14" style={`max-width: ${proseWidth}`}>
               {@html findResult.html}
             </article>
           </div>
@@ -1097,7 +1161,7 @@
             {errorMessage}
           </p>
         {/if}
-        <article class="markdown mx-auto w-full max-w-[46rem] px-8 py-14">
+        <article class="markdown mx-auto w-full px-8 py-14" style={`max-width: ${proseWidth}`}>
           {@html findResult.html}
         </article>
       </section>
@@ -1154,6 +1218,60 @@
           Discard
         </Button>
         <Button size="sm" onclick={() => confirmResolve?.("save")}>Save</Button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+{#if settingsOpen}
+  <div
+    class="fixed inset-0 z-50 grid place-items-center bg-black/40"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="settings-title"
+  >
+    <div class="w-full max-w-sm rounded-lg border border-border bg-background p-6 shadow-lg">
+      <h2 id="settings-title" class="text-base font-medium">Settings</h2>
+      <div class="mt-4 grid gap-4 text-sm">
+        <label class="grid gap-1.5">
+          <span class="text-muted-foreground">Appearance</span>
+          <select
+            bind:value={themePreference}
+            class="rounded-md border border-input bg-background px-2 py-1.5"
+          >
+            <option value="system">System</option>
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </select>
+        </label>
+        <label class="grid gap-1.5">
+          <span class="text-muted-foreground">Prose width</span>
+          <select
+            bind:value={preferences.proseWidth}
+            class="rounded-md border border-input bg-background px-2 py-1.5"
+          >
+            <option value="narrow">Narrow</option>
+            <option value="default">Default</option>
+            <option value="wide">Wide</option>
+          </select>
+        </label>
+        <label class="grid gap-1.5">
+          <span class="text-muted-foreground">Editor font size</span>
+          <input
+            type="number"
+            min="11"
+            max="24"
+            bind:value={preferences.editorFontSize}
+            class="rounded-md border border-input bg-background px-2 py-1.5"
+          />
+        </label>
+        <label class="flex items-center gap-2">
+          <input type="checkbox" bind:checked={preferences.lineWrap} />
+          <span>Wrap long lines in the editor</span>
+        </label>
+      </div>
+      <div class="mt-6 flex justify-end">
+        <Button size="sm" onclick={() => (settingsOpen = false)}>Done</Button>
       </div>
     </div>
   </div>
