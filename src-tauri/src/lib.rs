@@ -336,6 +336,50 @@ fn clipboard_files() -> Result<Vec<String>, String> {
     files
 }
 
+#[tauri::command]
+fn menu_new_document(app: tauri::AppHandle) {
+    use tauri::{Emitter, Manager};
+    let _ = app.emit("menu-new-document", ());
+}
+
+#[tauri::command]
+fn menu_open_document(app: tauri::AppHandle) {
+    use tauri::{Emitter, Manager};
+    let _ = app.emit("menu-open-document", ());
+}
+
+#[tauri::command]
+fn menu_save_file(app: tauri::AppHandle) {
+    use tauri::{Emitter, Manager};
+    let _ = app.emit("menu-save-file", ());
+}
+
+#[tauri::command]
+fn menu_save_as_file(app: tauri::AppHandle) {
+    use tauri::{Emitter, Manager};
+    let _ = app.emit("menu-save-as-file", ());
+}
+
+#[tauri::command]
+fn menu_close_window(app: tauri::AppHandle) {
+    use tauri::Manager;
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.close();
+    }
+}
+
+#[tauri::command]
+fn menu_find(app: tauri::AppHandle) {
+    use tauri::{Emitter, Manager};
+    let _ = app.emit("menu-find", ());
+}
+
+#[tauri::command]
+fn menu_set_view_mode(app: tauri::AppHandle, mode: String) {
+    use tauri::{Emitter, Manager};
+    let _ = app.emit("menu-set-view-mode", mode);
+}
+
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
@@ -435,6 +479,38 @@ pub fn run(launch: Launch) {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
+            // Build and set the menu.
+            use tauri::menu::{MenuItemBuilder, SubmenuBuilder};
+
+            let mut file_menu = SubmenuBuilder::new(app, "File");
+            file_menu = file_menu.item(&MenuItemBuilder::new("New").accelerator("CmdOrCtrl+N").id("new").build(app)?);
+            file_menu = file_menu.item(&MenuItemBuilder::new("Open").accelerator("CmdOrCtrl+O").id("open").build(app)?);
+            file_menu = file_menu.item(&MenuItemBuilder::new("Save").accelerator("CmdOrCtrl+S").id("save").build(app)?);
+            file_menu = file_menu.item(&MenuItemBuilder::new("Save As").accelerator("CmdOrCtrl+Shift+S").id("save-as").build(app)?);
+            file_menu = file_menu.separator();
+            file_menu = file_menu.item(&MenuItemBuilder::new("Close").accelerator("CmdOrCtrl+W").id("close").build(app)?);
+            let file_menu = file_menu.build()?;
+
+            let mut edit_menu = SubmenuBuilder::new(app, "Edit");
+            edit_menu = edit_menu.item(&MenuItemBuilder::new("Undo").accelerator("CmdOrCtrl+Z").id("undo").build(app)?);
+            edit_menu = edit_menu.item(&MenuItemBuilder::new("Redo").accelerator("CmdOrCtrl+Shift+Z").id("redo").build(app)?);
+            edit_menu = edit_menu.separator();
+            edit_menu = edit_menu.item(&MenuItemBuilder::new("Cut").accelerator("CmdOrCtrl+X").id("cut").build(app)?);
+            edit_menu = edit_menu.item(&MenuItemBuilder::new("Copy").accelerator("CmdOrCtrl+C").id("copy").build(app)?);
+            edit_menu = edit_menu.item(&MenuItemBuilder::new("Paste").accelerator("CmdOrCtrl+V").id("paste").build(app)?);
+            edit_menu = edit_menu.separator();
+            edit_menu = edit_menu.item(&MenuItemBuilder::new("Find").accelerator("CmdOrCtrl+F").id("find").build(app)?);
+            let edit_menu = edit_menu.build()?;
+
+            let mut view_menu = SubmenuBuilder::new(app, "View");
+            view_menu = view_menu.item(&MenuItemBuilder::new("Rendered").accelerator("CmdOrCtrl+1").id("view-rendered").build(app)?);
+            view_menu = view_menu.item(&MenuItemBuilder::new("Source").accelerator("CmdOrCtrl+2").id("view-source").build(app)?);
+            view_menu = view_menu.item(&MenuItemBuilder::new("Split").accelerator("CmdOrCtrl+3").id("view-split").build(app)?);
+            let view_menu = view_menu.build()?;
+
+            let menu = tauri::menu::Menu::with_items(app, &[&file_menu, &edit_menu, &view_menu])?;
+            app.set_menu(menu)?;
+
             // The main window is created here instead of by the config
             // (`create: false`) to attach the navigation policy: the
             // webview may only load the app itself. External links open
@@ -472,10 +548,78 @@ pub fn run(launch: Launch) {
             clipboard_files,
             launch_document,
             save_file,
-            watch_document
+            watch_document,
+            menu_new_document,
+            menu_open_document,
+            menu_save_file,
+            menu_save_as_file,
+            menu_close_window,
+            menu_find,
+            menu_set_view_mode
         ])
         .build(tauri::generate_context!())
         .expect("failed to build Markive");
+
+    app.on_menu_event(|app, event| {
+        use tauri::{Emitter, Manager};
+        match event.id.as_ref() {
+            "new" => {
+                let _ = app.emit("menu-new-document", ());
+            }
+            "open" => {
+                let _ = app.emit("menu-open-document", ());
+            }
+            "save" => {
+                let _ = app.emit("menu-save-file", ());
+            }
+            "save-as" => {
+                let _ = app.emit("menu-save-as-file", ());
+            }
+            "close" => {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.close();
+                }
+            }
+            "undo" => {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.emit("menu-undo", ());
+                }
+            }
+            "redo" => {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.emit("menu-redo", ());
+                }
+            }
+            "cut" => {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.emit("menu-cut", ());
+                }
+            }
+            "copy" => {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.emit("menu-copy", ());
+                }
+            }
+            "paste" => {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.emit("menu-paste", ());
+                }
+            }
+            "find" => {
+                let _ = app.emit("menu-find", ());
+            }
+            "view-rendered" => {
+                let _ = app.emit("menu-set-view-mode", "rendered");
+            }
+            "view-source" => {
+                let _ = app.emit("menu-set-view-mode", "source");
+            }
+            "view-split" => {
+                let _ = app.emit("menu-set-view-mode", "split");
+            }
+            _ => {}
+        }
+    });
 
     app.run(|app, event| {
         #[cfg(target_os = "macos")]

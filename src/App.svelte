@@ -567,6 +567,48 @@
     }
   })();
 
+  // Menu actions.
+  void (async () => {
+    try {
+      await listen("menu-new-document", () => {
+        newDocument();
+      });
+      await listen("menu-open-document", () => {
+        void openFile();
+      });
+      await listen("menu-save-file", () => {
+        void saveCurrentDocument();
+      });
+      await listen("menu-save-as-file", () => {
+        void saveCurrentDocument(true);
+      });
+      await listen("menu-find", () => {
+        openFind();
+      });
+      await listen<string>("menu-set-view-mode", (event) => {
+        const mode = event.payload as "rendered" | "source" | "split";
+        setViewMode(mode);
+      });
+      await listen("menu-undo", () => {
+        invoke("undo").catch(() => {});
+      });
+      await listen("menu-redo", () => {
+        invoke("redo").catch(() => {});
+      });
+      await listen("menu-cut", () => {
+        document.execCommand("cut");
+      });
+      await listen("menu-copy", () => {
+        document.execCommand("copy");
+      });
+      await listen("menu-paste", () => {
+        document.execCommand("paste");
+      });
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : String(error);
+    }
+  })();
+
   // External changes to the open file, reported by the backend watcher.
   async function handleFileChange(kind: string) {
     if (documentSource?.kind !== "file") return;
