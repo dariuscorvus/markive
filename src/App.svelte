@@ -123,6 +123,8 @@
     findPreviousMatch: () => void;
     getScrollTop: () => number;
     setScrollTop: (top: number) => void;
+    undoEdit: () => void;
+    redoEdit: () => void;
   } | null>(null);
 
   let isDirty = $derived(isDocumentDirty(documentSource, sourceText, savedText));
@@ -786,6 +788,12 @@
         break;
       case "open":
         void openFile();
+        break;
+      case "undo":
+        editorRef?.undoEdit();
+        break;
+      case "redo":
+        editorRef?.redoEdit();
         break;
       case "save":
         saveAction();
