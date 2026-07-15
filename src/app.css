@@ -231,6 +231,28 @@
   max-width: 100%;
 }
 
+/* Legacy `align` attribute, as used in GitHub READMEs. Images are
+   display: block, so text-align alone can't move them. */
+.markdown [align="left"] {
+  text-align: left;
+}
+
+.markdown [align="center"] {
+  text-align: center;
+}
+
+.markdown [align="center"] img {
+  margin-inline: auto;
+}
+
+.markdown [align="right"] {
+  text-align: right;
+}
+
+.markdown [align="right"] img {
+  margin-inline-start: auto;
+}
+
 .markdown input[type="checkbox"] {
   accent-color: var(--primary);
   margin: 0 0.5rem 0 -1.4rem;

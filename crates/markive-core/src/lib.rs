@@ -147,6 +147,11 @@ fn sanitize(html: &str) -> String {
     builder
         .add_tags(["input"])
         .add_tag_attributes("input", ["checked", "disabled", "type"]);
+    // GitHub keeps the legacy `align` attribute; READMEs rely on it to
+    // center images and badges.
+    for tag in ["p", "div", "td", "th"] {
+        builder.add_tag_attributes(tag, ["align"]);
+    }
     for heading in ["h1", "h2", "h3", "h4", "h5", "h6"] {
         builder.add_tag_attributes(heading, ["id"]);
     }
@@ -581,6 +586,16 @@ mod tests {
 
         assert!(rendered.html().contains("src=\"/repo/icon.png\""));
         assert_eq!(rendered.local_images(), [PathBuf::from("/repo/icon.png")]);
+    }
+
+    #[test]
+    fn keeps_the_align_attribute_on_block_elements() {
+        let rendered = render_document(
+            "<p align=\"center\"><img src=\"/a.png\"></p>",
+            Some(Path::new("/repo")),
+        );
+
+        assert!(rendered.html().contains("<p align=\"center\">"));
     }
 
     #[test]
