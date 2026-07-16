@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./src-tauri/icons/128x128@2x.png" width="128" alt="Markive app icon">
+  <img src="./markive-icon.svg" width="128" alt="Markive app icon">
 </p>
 
 # Markive
