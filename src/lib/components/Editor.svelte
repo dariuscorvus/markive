@@ -181,6 +181,27 @@
   export function setScrollTop(top: number) {
     if (view) view.scrollDOM.scrollTop = top;
   }
+
+  /**
+   * Selects a match's text (1-based line, 0-based character offsets
+   * within it) and scrolls it to the center of the viewport — how a
+   * full-text search result is opened. Clamped to the document's
+   * actual bounds so a stale result from a file edited since the
+   * search ran can't request a position that no longer exists.
+   */
+  export function revealMatch(line: number, matchStart: number, matchEnd: number) {
+    if (!view) return;
+
+    const lineInfo = view.state.doc.line(Math.min(Math.max(line, 1), view.state.doc.lines));
+    const from = Math.min(lineInfo.from + matchStart, lineInfo.to);
+    const to = Math.min(lineInfo.from + matchEnd, lineInfo.to);
+
+    view.dispatch({
+      selection: { anchor: from, head: to },
+      effects: EditorView.scrollIntoView(from, { y: "center" }),
+    });
+    view.focus();
+  }
 </script>
 
 <div bind:this={container} class="h-full min-h-0 overflow-hidden"></div>

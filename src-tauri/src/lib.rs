@@ -394,6 +394,267 @@ async fn list_all_files(root: String, include_hidden: bool) -> Result<QuickOpenR
     Ok(walk_files_for_quick_open(std::path::Path::new(&root), include_hidden))
 }
 
+/// One occurrence of a search query on one line of one file.
+/// `match_start`/`match_end` are character offsets into `line_text`
+/// (not byte offsets — a Markdown line with accented or multi-byte
+/// characters would otherwise misalign against the JS string the
+/// frontend slices to highlight the match).
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SearchMatch {
+    line: usize,
+    line_text: String,
+    match_start: usize,
+    match_end: usize,
+}
+
+/// One searched file's matches, emitted as its own `search-result`
+/// event as soon as that file is done — the stream a search produces,
+/// rather than one batched response at the end.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SearchFileResult {
+    search_id: String,
+    path: String,
+    relative_path: String,
+    matches: Vec<SearchMatch>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SearchComplete {
+    search_id: String,
+    files_searched: usize,
+    truncated: bool,
+}
+
+/// Tracks the most recently started search. Starting a new search (or
+/// closing the panel, via `stop_search`) bumps this, and the walk
+/// belonging to any older generation notices on its next iteration
+/// and stops emitting — the cooperative-cancellation mechanism that
+/// keeps a superseded search from wasting work or racing a newer
+/// one's results onto the screen.
+struct SearchGeneration(std::sync::atomic::AtomicU64);
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn stop_search(generation: tauri::State<'_, SearchGeneration>) {
+    generation.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Builds the search pattern from the query and its modes. Whole-word
+/// wraps the pattern in `\b` boundaries whether or not it's already a
+/// regular expression — combining the two is a normal thing to want,
+/// mirroring how most editors' find bars let you stack modes.
+///
+/// # Errors
+///
+/// Returns a message suitable for display when the query is not a
+/// valid regular expression (regex mode) or otherwise fails to
+/// compile.
+fn build_search_pattern(
+    query: &str,
+    case_sensitive: bool,
+    whole_word: bool,
+    is_regex: bool,
+) -> Result<regex::Regex, String> {
+    let base = if is_regex { query.to_string() } else { regex::escape(query) };
+    let pattern = if whole_word { format!(r"\b(?:{base})\b") } else { base };
+
+    regex::RegexBuilder::new(&pattern)
+        .case_insensitive(!case_sensitive)
+        .build()
+        .map_err(|error| format!("Invalid search pattern: {error}"))
+}
+
+const MAX_SEARCH_MATCHES: usize = 5_000;
+
+/// Walks every Markdown file under `root`, calling `on_file_matched`
+/// with each file's matches as soon as they're known — the streaming
+/// half of a search, kept free of any Tauri/event-emitting
+/// dependency so it's directly unit-testable.
+///
+/// Walked the same cycle-safe way as `list_all_files` — canonicalized
+/// directories tracked in a visited set — but filtered to Markdown
+/// files and reading each one's content; a file that fails to read
+/// as UTF-8 (binary, or otherwise unreadable) is skipped rather than
+/// failing the whole search. Hidden files and folders are excluded
+/// unless `include_hidden` is set, matching the explorer's own
+/// toggle. `is_current` is polled between files (and between
+/// directories) so a caller can cooperatively cancel an in-progress
+/// walk. Stops early, reporting `truncated`, once
+/// `MAX_SEARCH_MATCHES` total matches have been found.
+fn walk_and_search(
+    root: &std::path::Path,
+    pattern: &regex::Regex,
+    include_hidden: bool,
+    is_current: impl Fn() -> bool,
+    mut on_file_matched: impl FnMut(&std::path::Path, &str, Vec<SearchMatch>),
+) -> (usize, bool) {
+    let Ok(root_canonical) = std::fs::canonicalize(root) else {
+        return (0, false);
+    };
+
+    let mut visited = std::collections::HashSet::new();
+    let mut stack = vec![root_canonical.clone()];
+    let mut files_searched = 0usize;
+    let mut total_matches = 0usize;
+    let mut truncated = false;
+
+    'walk: while let Some(dir) = stack.pop() {
+        if !is_current() {
+            break;
+        }
+        if !visited.insert(dir.clone()) {
+            continue;
+        }
+        let Ok(read_dir) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+
+        for entry in read_dir.flatten() {
+            if !is_current() {
+                break 'walk;
+            }
+
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !include_hidden && name.starts_with('.') {
+                continue;
+            }
+
+            let Ok(metadata) = std::fs::metadata(entry.path()) else {
+                continue;
+            };
+
+            if metadata.is_dir() {
+                let Ok(canonical_dir) = std::fs::canonicalize(entry.path()) else {
+                    continue;
+                };
+                stack.push(canonical_dir);
+                continue;
+            }
+
+            let path = dir.join(&name);
+            if !markive_core::is_markdown_path(&path) {
+                continue;
+            }
+
+            let Ok(content) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            files_searched += 1;
+
+            let mut matches = Vec::new();
+            for (line_index, line_text) in content.lines().enumerate() {
+                for found in pattern.find_iter(line_text) {
+                    matches.push(SearchMatch {
+                        line: line_index + 1,
+                        line_text: line_text.to_string(),
+                        match_start: line_text[..found.start()].chars().count(),
+                        match_end: line_text[..found.end()].chars().count(),
+                    });
+                }
+            }
+
+            if matches.is_empty() {
+                continue;
+            }
+
+            total_matches += matches.len();
+            if total_matches >= MAX_SEARCH_MATCHES {
+                let overflow = total_matches - MAX_SEARCH_MATCHES;
+                matches.truncate(matches.len().saturating_sub(overflow));
+                truncated = true;
+            }
+
+            let relative_path =
+                path.strip_prefix(&root_canonical).unwrap_or(&path).to_string_lossy().into_owned();
+            on_file_matched(&path, &relative_path, matches);
+
+            if truncated {
+                break 'walk;
+            }
+        }
+    }
+
+    (files_searched, truncated)
+}
+
+/// Searches every Markdown file under `root` for `query`, emitting a
+/// `search-result` event per file as soon as that file's matches are
+/// known (rather than collecting everything before returning) and a
+/// final `search-complete` event when the walk finishes, is
+/// superseded by a newer search, or is stopped.
+///
+/// # Errors
+///
+/// Returns a message suitable for display when `query` doesn't
+/// compile as a search pattern (regex mode).
+// Four independent, named toggles a user can combine freely (case
+// sensitivity, whole word, regex, hidden files) — not a state machine
+// an enum would model better, so the usual "too many bools" advice
+// doesn't fit here.
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(clippy::struct_excessive_bools)]
+struct SearchOptions {
+    case_sensitive: bool,
+    whole_word: bool,
+    is_regex: bool,
+    include_hidden: bool,
+}
+
+#[tauri::command]
+async fn search_markdown(
+    app: tauri::AppHandle,
+    generation: tauri::State<'_, SearchGeneration>,
+    search_id: String,
+    root: String,
+    query: String,
+    options: SearchOptions,
+) -> Result<(), String> {
+    use tauri::Emitter;
+
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        let _ = app.emit(
+            "search-complete",
+            SearchComplete { search_id, files_searched: 0, truncated: false },
+        );
+        return Ok(());
+    }
+
+    let pattern = build_search_pattern(
+        trimmed,
+        options.case_sensitive,
+        options.whole_word,
+        options.is_regex,
+    )?;
+    let my_generation = generation.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+    let is_current = || generation.0.load(std::sync::atomic::Ordering::SeqCst) == my_generation;
+
+    let (files_searched, truncated) = walk_and_search(
+        std::path::Path::new(&root),
+        &pattern,
+        options.include_hidden,
+        is_current,
+        |path, relative_path, matches| {
+            let _ = app.emit(
+                "search-result",
+                SearchFileResult {
+                    search_id: search_id.clone(),
+                    path: path.to_string_lossy().into_owned(),
+                    relative_path: relative_path.to_string(),
+                    matches,
+                },
+            );
+        },
+    );
+
+    let _ = app.emit("search-complete", SearchComplete { search_id, files_searched, truncated });
+    Ok(())
+}
+
 /// Appends `.md` when `name` has no recognized Markdown extension, so
 /// a file created through the explorer always shows up in it — the
 /// listing filters to Markdown files only.
@@ -866,6 +1127,201 @@ mod quick_open_tests {
     }
 }
 
+#[cfg(test)]
+mod search_tests {
+    use super::{build_search_pattern, walk_and_search, SearchMatch};
+
+    struct TestDir(std::path::PathBuf);
+
+    impl TestDir {
+        fn new(name: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("{name}-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).expect("create test dir");
+            Self(dir)
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn always_current() -> bool {
+        true
+    }
+
+    fn collect(
+        dir: &std::path::Path,
+        pattern: &regex::Regex,
+        include_hidden: bool,
+    ) -> Vec<(String, Vec<SearchMatch>)> {
+        let mut collected = Vec::new();
+        walk_and_search(dir, pattern, include_hidden, always_current, |_path, relative, matches| {
+            collected.push((relative.to_string(), matches));
+        });
+        collected
+    }
+
+    #[test]
+    fn build_search_pattern_literal_mode_escapes_regex_metacharacters() {
+        let pattern = build_search_pattern("a.b", false, false, false).expect("build pattern");
+        assert!(pattern.is_match("a.b"));
+        assert!(!pattern.is_match("axb"), "the dot must be literal, not \"any character\"");
+    }
+
+    #[test]
+    fn build_search_pattern_case_sensitivity() {
+        let sensitive = build_search_pattern("Hello", true, false, false).expect("build pattern");
+        assert!(sensitive.is_match("Hello"));
+        assert!(!sensitive.is_match("hello"));
+
+        let insensitive = build_search_pattern("Hello", false, false, false).expect("build pattern");
+        assert!(insensitive.is_match("hello"));
+    }
+
+    #[test]
+    fn build_search_pattern_whole_word() {
+        let pattern = build_search_pattern("cat", false, true, false).expect("build pattern");
+        assert!(pattern.is_match("a cat sat"));
+        assert!(!pattern.is_match("concatenate"));
+    }
+
+    #[test]
+    fn build_search_pattern_regex_mode() {
+        let pattern = build_search_pattern(r"c[au]t", false, false, true).expect("build pattern");
+        assert!(pattern.is_match("cat"));
+        assert!(pattern.is_match("cut"));
+        assert!(!pattern.is_match("cot"));
+    }
+
+    #[test]
+    fn build_search_pattern_whole_word_combines_with_regex_mode() {
+        let pattern = build_search_pattern(r"c[au]t", false, true, true).expect("build pattern");
+        assert!(pattern.is_match("a cat sat"));
+        assert!(!pattern.is_match("concatenate"));
+    }
+
+    #[test]
+    fn build_search_pattern_rejects_an_invalid_regex() {
+        assert!(build_search_pattern("(unclosed", false, false, true).is_err());
+    }
+
+    #[test]
+    fn finds_matches_with_line_and_character_context() {
+        let dir = TestDir::new("markive-search-basic");
+        std::fs::write(dir.0.join("notes.md"), "first line\nsecond needle line\nthird line")
+            .expect("write test file");
+
+        let pattern = build_search_pattern("needle", false, false, false).expect("build pattern");
+        let results = collect(&dir.0, &pattern, false);
+
+        assert_eq!(results.len(), 1);
+        let (relative, matches) = &results[0];
+        assert_eq!(relative, "notes.md");
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].line, 2);
+        assert_eq!(matches[0].line_text, "second needle line");
+        assert_eq!(matches[0].match_start, 7);
+        assert_eq!(matches[0].match_end, 13);
+    }
+
+    #[test]
+    fn finds_multiple_matches_on_the_same_line() {
+        let dir = TestDir::new("markive-search-multi");
+        std::fs::write(dir.0.join("notes.md"), "cat and cat").expect("write test file");
+
+        let pattern = build_search_pattern("cat", false, false, false).expect("build pattern");
+        let results = collect(&dir.0, &pattern, false);
+
+        assert_eq!(results[0].1.len(), 2);
+    }
+
+    #[test]
+    fn only_markdown_files_are_searched() {
+        let dir = TestDir::new("markive-search-filter");
+        std::fs::write(dir.0.join("notes.md"), "needle").expect("write markdown");
+        std::fs::write(dir.0.join("notes.txt"), "needle").expect("write text file");
+
+        let pattern = build_search_pattern("needle", false, false, false).expect("build pattern");
+        let results = collect(&dir.0, &pattern, false);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, "notes.md");
+    }
+
+    #[test]
+    fn hidden_files_are_excluded_unless_requested() {
+        let dir = TestDir::new("markive-search-hidden");
+        std::fs::write(dir.0.join(".hidden.md"), "needle").expect("write hidden file");
+        std::fs::write(dir.0.join("visible.md"), "needle").expect("write visible file");
+
+        let pattern = build_search_pattern("needle", false, false, false).expect("build pattern");
+
+        let excluded = collect(&dir.0, &pattern, false);
+        assert_eq!(excluded.len(), 1);
+        assert_eq!(excluded[0].0, "visible.md");
+
+        let included = collect(&dir.0, &pattern, true);
+        assert_eq!(included.len(), 2);
+    }
+
+    #[test]
+    fn a_binary_or_non_utf8_file_is_skipped_not_fatal() {
+        let dir = TestDir::new("markive-search-binary");
+        // A .md extension with invalid UTF-8 content, standing in for
+        // a binary file — it must not fail the whole search.
+        std::fs::write(dir.0.join("binary.md"), [0xFF, 0xFE, 0x00, 0xFF]).expect("write binary file");
+        std::fs::write(dir.0.join("real.md"), "needle").expect("write real file");
+
+        let pattern = build_search_pattern("needle", false, false, false).expect("build pattern");
+        let results = collect(&dir.0, &pattern, false);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, "real.md");
+    }
+
+    #[test]
+    fn a_symlink_loop_does_not_hang_the_search() {
+        let dir = TestDir::new("markive-search-loop");
+        std::fs::write(dir.0.join("notes.md"), "needle").expect("write test file");
+        std::os::unix::fs::symlink(&dir.0, dir.0.join("loop")).expect("create symlink loop");
+
+        let pattern = build_search_pattern("needle", false, false, false).expect("build pattern");
+        let results = collect(&dir.0, &pattern, false);
+
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn stops_when_is_current_returns_false() {
+        let dir = TestDir::new("markive-search-cancel");
+        std::fs::write(dir.0.join("a.md"), "needle").expect("write a");
+        std::fs::write(dir.0.join("b.md"), "needle").expect("write b");
+
+        let pattern = build_search_pattern("needle", false, false, false).expect("build pattern");
+        let mut collected = Vec::new();
+        let (files_searched, _truncated) =
+            walk_and_search(&dir.0, &pattern, false, || false, |_path, relative, matches| {
+                collected.push((relative.to_string(), matches));
+            });
+
+        assert_eq!(files_searched, 0);
+        assert!(collected.is_empty());
+    }
+
+    #[test]
+    fn files_with_no_matches_produce_no_callback() {
+        let dir = TestDir::new("markive-search-nomatch");
+        std::fs::write(dir.0.join("notes.md"), "nothing relevant here").expect("write test file");
+
+        let pattern = build_search_pattern("needle", false, false, false).expect("build pattern");
+        let results = collect(&dir.0, &pattern, false);
+
+        assert!(results.is_empty());
+    }
+}
+
 #[tauri::command]
 fn render_markdown(markdown: &str) -> String {
     markive_core::render_markdown(markdown)
@@ -1128,6 +1584,7 @@ struct MenuHandles {
     save: tauri::menu::MenuItem<tauri::Wry>,
     save_as: tauri::menu::MenuItem<tauri::Wry>,
     find: tauri::menu::MenuItem<tauri::Wry>,
+    find_in_files: tauri::menu::MenuItem<tauri::Wry>,
     close_tab: tauri::menu::MenuItem<tauri::Wry>,
     quick_open: tauri::menu::MenuItem<tauri::Wry>,
     rendered: tauri::menu::CheckMenuItem<tauri::Wry>,
@@ -1153,6 +1610,7 @@ fn set_menu_state(
         handles.save.set_enabled(has_document)?;
         handles.save_as.set_enabled(has_document)?;
         handles.find.set_enabled(has_document)?;
+        handles.find_in_files.set_enabled(has_folder)?;
         handles.close_tab.set_enabled(has_document)?;
         handles.quick_open.set_enabled(has_folder)?;
 
@@ -1218,6 +1676,10 @@ fn build_menu(app: &tauri::App) -> tauri::Result<MenuHandles> {
         .accelerator("CmdOrCtrl+F")
         .enabled(false)
         .build(app)?;
+    let find_in_files = MenuItemBuilder::with_id("find-in-files", "Find in Folder…")
+        .accelerator("Shift+CmdOrCtrl+F")
+        .enabled(false)
+        .build(app)?;
     let rendered = CheckMenuItemBuilder::with_id("view-rendered", "Rendered")
         .accelerator("CmdOrCtrl+1")
         .enabled(false)
@@ -1281,6 +1743,7 @@ fn build_menu(app: &tauri::App) -> tauri::Result<MenuHandles> {
         .select_all()
         .separator()
         .item(&find)
+        .item(&find_in_files)
         .build()?;
     let theme_light = CheckMenuItemBuilder::with_id("theme-light", "Light").build(app)?;
     let theme_dark = CheckMenuItemBuilder::with_id("theme-dark", "Dark").build(app)?;
@@ -1316,6 +1779,7 @@ fn build_menu(app: &tauri::App) -> tauri::Result<MenuHandles> {
         save,
         save_as,
         find,
+        find_in_files,
         close_tab,
         quick_open,
         rendered,
@@ -1573,6 +2037,7 @@ pub fn run(launch: Launch) {
                     | "save"
                     | "save-as"
                     | "find"
+                    | "find-in-files"
                     | "view-rendered"
                     | "view-source"
                     | "view-split"
@@ -1593,11 +2058,14 @@ pub fn run(launch: Launch) {
         .manage(RecentSaves(Mutex::new(std::collections::HashMap::new())))
         .manage(DocumentWatcher(Mutex::new(None)))
         .manage(LastGeometry(Mutex::new(None)))
+        .manage(SearchGeneration(std::sync::atomic::AtomicU64::new(0)))
         .invoke_handler(tauri::generate_handler![
             open_document,
             open_folder,
             read_folder_entries,
             list_all_files,
+            search_markdown,
+            stop_search,
             create_file,
             create_folder,
             move_entry,

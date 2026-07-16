@@ -29,6 +29,7 @@
   import Editor from "$lib/components/Editor.svelte";
   import Explorer from "$lib/components/Explorer.svelte";
   import QuickOpen from "$lib/components/QuickOpen.svelte";
+  import SearchPanel from "$lib/components/SearchPanel.svelte";
   import TabBar from "$lib/components/TabBar.svelte";
   import {
     MARKDOWN_EXTENSIONS,
@@ -88,6 +89,34 @@
     errorMessage = null;
     try {
       await openPathInTab(path);
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  let searchPanelOpen = $state(false);
+
+  function openSearchPanel() {
+    if (folderRoot) searchPanelOpen = true;
+  }
+
+  async function openSearchMatch(path: string, line: number, matchStart: number, matchEnd: number) {
+    searchPanelOpen = false;
+    errorMessage = null;
+    try {
+      await openPathInTab(path);
+      // A match only means something in a view that shows source
+      // text; Split keeps showing it too, so only Rendered needs to
+      // switch.
+      if (activeTab?.viewMode === "rendered") {
+        await setActiveViewMode("source");
+      }
+      // The editor's tab swap happens inside its own effect, one tick
+      // after activeTabId changes here — the same reason switchToTab
+      // defers its scroll restore.
+      requestAnimationFrame(() => {
+        editorRef?.revealMatch(line, matchStart, matchEnd);
+      });
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : String(error);
     }
@@ -184,6 +213,7 @@
     undoEdit: () => void;
     redoEdit: () => void;
     forgetTab: (id: string) => void;
+    revealMatch: (line: number, matchStart: number, matchEnd: number) => void;
   } | null>(null);
 
   let isDirty = $derived(activeTab ? isTabDirty(activeTab) : false);
@@ -1084,6 +1114,9 @@
       case "quick-open":
         openQuickOpen();
         break;
+      case "find-in-files":
+        openSearchPanel();
+        break;
       case "undo":
         editorRef?.undoEdit();
         break;
@@ -1592,6 +1625,15 @@
     includeHidden={showHiddenFiles}
     onOpenFile={openFileFromQuickOpen}
     onClose={() => (quickOpenOpen = false)}
+  />
+{/if}
+
+{#if searchPanelOpen && folderRoot}
+  <SearchPanel
+    rootPath={folderRoot}
+    includeHidden={showHiddenFiles}
+    onOpenMatch={openSearchMatch}
+    onClose={() => (searchPanelOpen = false)}
   />
 {/if}
 
