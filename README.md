@@ -7,12 +7,16 @@
 > macOS opens PDFs in Preview.
 > Markdown deserves the same: double-click, read, done.
 
-A native macOS Markdown viewer and editor. Open a `.md` from Finder and it renders. Hit ⌘2 and it's an editor. No project folders, no workspace, no Electron.
+A native macOS Markdown viewer and editor. Open a `.md` from Finder and it renders. Hit ⌘2 and it's an editor. Open a folder and it becomes a root — no project setup, no workspace file, no Electron.
 
 ## What it is
 
 - **Viewer first.** Rendered, Source, and Split views (⌘1/⌘2/⌘3). GitHub-style heading anchors, tables, task lists, fenced code. Local images and relative links resolve — including images written as raw HTML, the way READMEs do it.
 - **Editor when you need it.** CodeMirror with Markdown highlighting, multi-cursor (⌘-click), undo history, live re-render in Split mode.
+- **Folder explorer.** Open a folder as a root and browse it in a sidebar — lazy tree, Markdown-focused (folders and `.md` files only), hidden files toggle, unsaved-changes indicator, and safe against symlink loops. Create, rename, and drag-and-drop-move files and folders from the sidebar; delete goes to the system trash. Open tabs follow along when their file is renamed or moved.
+- **Tabs.** Open several documents at once, each keeping its own content, path, view mode, selection, and dirty state. Reorder by dragging, close individually, and picking an already-open file focuses its tab instead of duplicating it.
+- **Quick Open.** ⌘P fuzzy-searches every file under the open folder root — Markdown ranks first, hidden files follow the explorer's toggle, and results filter as you type.
+- **Find in Folder.** ⇧⌘F full-text-searches every Markdown file under the root, streaming results as they're found. Case, whole-word, and regex modes; selecting a result opens the file with the match selected.
 - **Safe by default.** Rendered HTML is sanitized; the webview never navigates. External links open in your browser, local `.md` links open in Markive, everything else is blocked. Saves are atomic — a failed write leaves the original untouched.
 - **Lossless quit.** ⌘Q never nags. The session — window, document, view mode, scroll, and unsaved edits — restores on the next launch, like TextEdit.
 - **Aware of the disk.** External edits reload clean documents automatically; conflicting edits raise a banner instead of silently losing either side.
@@ -46,19 +50,23 @@ Settings (⌘,) → **Install Command Line Tool** puts `markive` on your PATH. T
 
 ```
 markive notes.md              # open a file in the app
+markive notes/                # open a folder as a root
 markive -                     # read a document from stdin
 markive render notes.md       # print sanitized HTML to stdout
 echo '# hi' | markive render  # works in pipes
 markive --version
 ```
 
-`render` is a plain Unix filter — no window, no daemon, exits when done. Opening a file hands off to the running instance and returns.
+`render` is a plain Unix filter — no window, no daemon, exits when done. Opening a file or folder hands off to the running instance and returns.
 
 ## Keyboard
 
 | | |
 |---|---|
-| ⌘O / ⌘N / ⌘S / ⇧⌘S | Open, New, Save, Save As |
+| ⌘O / ⇧⌘O / ⌘N / ⌘S / ⇧⌘S | Open, Open Folder, New, Save, Save As |
+| ⌘W / ⇧⌘W | Close Tab, Close Window |
+| ⌘P | Quick Open (needs an open folder) |
+| ⇧⌘F | Find in Folder (needs an open folder) |
 | ⌘1 / ⌘2 / ⌘3 | Rendered, Source, Split |
 | ⌘E | Cycle view mode |
 | ⌘F, ⌘G / ⇧⌘G | Find, next / previous match |

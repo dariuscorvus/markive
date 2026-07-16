@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 
-import { fileName, isDocumentDirty, isMarkdownPath } from "./document-state";
+import { fileName, isDocumentDirty, isMarkdownPath, remapDocumentSource } from "./document-state";
 
 describe("isDocumentDirty", () => {
   test("no document is never dirty", () => {
@@ -52,6 +52,43 @@ describe("isMarkdownPath", () => {
   test("rejects other files and extension-less paths", () => {
     for (const path of ["a.txt", "b.md.png", "README", "archive.tar.gz", "md"]) {
       expect(isMarkdownPath(path)).toBe(false);
+    }
+  });
+});
+
+describe("remapDocumentSource", () => {
+  test("remaps a file source that was itself renamed or moved", () => {
+    const source = { kind: "file", path: "/docs/old.md" } as const;
+    expect(remapDocumentSource(source, "/docs/old.md", "/docs/new.md")).toEqual({
+      kind: "file",
+      path: "/docs/new.md",
+    });
+  });
+
+  test("remaps a file nested under a renamed or moved folder", () => {
+    const source = { kind: "file", path: "/docs/notes/deep/a.md" } as const;
+    expect(remapDocumentSource(source, "/docs/notes", "/docs/renamed")).toEqual({
+      kind: "file",
+      path: "/docs/renamed/deep/a.md",
+    });
+  });
+
+  test("leaves an unrelated file source untouched", () => {
+    const source = { kind: "file", path: "/docs/other.md" } as const;
+    expect(remapDocumentSource(source, "/docs/old.md", "/docs/new.md")).toEqual(source);
+  });
+
+  test("does not match a sibling whose name is a prefix of the renamed path", () => {
+    // "/docs/notes-extra/a.md" must not be treated as nested under
+    // "/docs/notes" just because the string starts with it.
+    const source = { kind: "file", path: "/docs/notes-extra/a.md" } as const;
+    expect(remapDocumentSource(source, "/docs/notes", "/docs/renamed")).toEqual(source);
+  });
+
+  test("leaves pathless sources untouched", () => {
+    for (const kind of ["clipboard", "stdin", "untitled"] as const) {
+      const source = { kind };
+      expect(remapDocumentSource(source, "/docs/old.md", "/docs/new.md")).toEqual(source);
     }
   });
 });

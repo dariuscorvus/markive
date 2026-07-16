@@ -29,6 +29,14 @@ fn main() -> ExitCode {
             // Piped stdin with no path behaves like `markive -`.
             None if !std::io::stdin().is_terminal() => launch_stdin(),
             None => launch_gui(Launch::Window),
+            // A folder opens as a filesystem root; anything else must be
+            // a Markdown document.
+            Some(path) if std::path::Path::new(&path).is_dir() => {
+                match cli::absolute_folder_path(&path) {
+                    Ok(absolute) => launch_gui(Launch::Folder(absolute)),
+                    Err(message) => fail(&message),
+                }
+            }
             Some(path) => match cli::absolute_document_path(&path) {
                 Ok(absolute) => launch_gui(Launch::Document(absolute)),
                 Err(message) => fail(&message),
@@ -73,7 +81,7 @@ fn launch_gui(launch: Launch) -> ExitCode {
     let mut command = std::process::Command::new(exe);
     match &launch {
         Launch::Window => {}
-        Launch::Document(path) => {
+        Launch::Document(path) | Launch::Folder(path) => {
             command.arg(path);
         }
         Launch::StdinFile(file) => {
