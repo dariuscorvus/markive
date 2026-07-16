@@ -15,12 +15,14 @@
   import { onMount } from "svelte";
 
   let {
+    tabId,
     value,
     dark = false,
     fontSize = 14,
     lineWrap = true,
     onchange,
   }: {
+    tabId: string;
     value: string;
     dark?: boolean;
     fontSize?: number;
@@ -41,6 +43,16 @@
   let container: HTMLDivElement;
   let view: EditorView | undefined;
 
+  // Each open tab keeps its own EditorState — content, selection, and
+  // undo history together — so switching tabs feels like switching
+  // windows, not reloading a document. The editor itself stays a
+  // single mounted instance; only the state object underneath it
+  // swaps. Suppressed while a swap is in flight so the resulting
+  // "document changed" update doesn't get reported as a user edit.
+  const tabStates = new Map<string, EditorState>();
+  let currentTabId: string | undefined;
+  let suppressChangeEvents = false;
+
   // CodeMirror joins lines with "\n" unless told otherwise; a CRLF
   // document must round-trip byte-identically.
   function stateFor(text: string): EditorState {
@@ -57,7 +69,7 @@
         sizing.of(sizeTheme(fontSize)),
         ...(text.includes("\r\n") ? [EditorState.lineSeparator.of("\r\n")] : []),
         EditorView.updateListener.of((update) => {
-          if (update.docChanged) {
+          if (update.docChanged && !suppressChangeEvents) {
             onchange(update.state.sliceDoc());
           }
         }),
@@ -70,8 +82,31 @@
     });
   }
 
+  // Switches the mounted editor to `id`'s state, caching the outgoing
+  // tab's live state first so its selection and undo history survive
+  // coming back to it. A tab not seen before starts fresh.
+  function loadTab(id: string, text: string) {
+    if (!view) return;
+
+    if (currentTabId !== undefined) tabStates.set(currentTabId, view.state);
+
+    const cached = tabStates.get(id);
+    suppressChangeEvents = true;
+    view.setState(cached && cached.sliceDoc() === text ? cached : stateFor(text));
+    suppressChangeEvents = false;
+
+    currentTabId = id;
+    view.focus();
+  }
+
+  /** Drops a closed tab's cached editor state. */
+  export function forgetTab(id: string) {
+    tabStates.delete(id);
+  }
+
   onMount(() => {
     view = new EditorView({ state: stateFor(value), parent: container });
+    currentTabId = tabId;
     view.focus();
     return () => view?.destroy();
   });
@@ -89,11 +124,18 @@
     });
   });
 
-  // A new document (different text than the editor holds) resets the
-  // editor state, including its undo history.
+  // Switching tabs swaps in that tab's cached state; staying on the
+  // same tab but seeing different text (an external reload) resets
+  // just that tab's editor state, including its undo history.
   $effect(() => {
-    if (view && value !== view.state.sliceDoc()) {
+    if (!view) return;
+
+    if (tabId !== currentTabId) {
+      loadTab(tabId, value);
+    } else if (value !== view.state.sliceDoc()) {
+      suppressChangeEvents = true;
       view.setState(stateFor(value));
+      suppressChangeEvents = false;
       view.focus();
     }
   });

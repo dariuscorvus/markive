@@ -672,6 +672,7 @@ struct MenuHandles {
     save: tauri::menu::MenuItem<tauri::Wry>,
     save_as: tauri::menu::MenuItem<tauri::Wry>,
     find: tauri::menu::MenuItem<tauri::Wry>,
+    close_tab: tauri::menu::MenuItem<tauri::Wry>,
     rendered: tauri::menu::CheckMenuItem<tauri::Wry>,
     source: tauri::menu::CheckMenuItem<tauri::Wry>,
     split: tauri::menu::CheckMenuItem<tauri::Wry>,
@@ -694,6 +695,7 @@ fn set_menu_state(
         handles.save.set_enabled(has_document)?;
         handles.save_as.set_enabled(has_document)?;
         handles.find.set_enabled(has_document)?;
+        handles.close_tab.set_enabled(has_document)?;
 
         for (item, mode) in [
             (&handles.rendered, "rendered"),
@@ -739,6 +741,16 @@ fn build_menu(app: &tauri::App) -> tauri::Result<MenuHandles> {
         .accelerator("Shift+CmdOrCtrl+S")
         .enabled(false)
         .build(app)?;
+    // ⌘W closes the focused tab, matching Safari/Chrome, rather than
+    // Tauri's predefined close_window() (also ⌘W by default) which
+    // would close the whole window instead.
+    let close_tab = MenuItemBuilder::with_id("close-tab", "Close Tab")
+        .accelerator("CmdOrCtrl+W")
+        .enabled(false)
+        .build(app)?;
+    let close_window = MenuItemBuilder::with_id("close-window", "Close Window")
+        .accelerator("Shift+CmdOrCtrl+W")
+        .build(app)?;
     let find = MenuItemBuilder::with_id("find", "Find…")
         .accelerator("CmdOrCtrl+F")
         .enabled(false)
@@ -781,7 +793,8 @@ fn build_menu(app: &tauri::App) -> tauri::Result<MenuHandles> {
         .item(&save)
         .item(&save_as)
         .separator()
-        .close_window()
+        .item(&close_tab)
+        .item(&close_window)
         .build()?;
     // Undo and Redo are custom items: the predefined ones fire
     // WebKit's undo: selector, which never reaches CodeMirror's own
@@ -839,6 +852,7 @@ fn build_menu(app: &tauri::App) -> tauri::Result<MenuHandles> {
         save,
         save_as,
         find,
+        close_tab,
         rendered,
         source,
         split,
@@ -1096,6 +1110,8 @@ pub fn run(launch: Launch) {
                     | "view-rendered"
                     | "view-source"
                     | "view-split"
+                    | "close-tab"
+                    | "close-window"
                     | "theme-light"
                     | "theme-dark"
                     | "theme-system"

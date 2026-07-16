@@ -26,13 +26,16 @@
   import { Button } from "$lib/components/ui/button";
   import Editor from "$lib/components/Editor.svelte";
   import Explorer from "$lib/components/Explorer.svelte";
+  import TabBar from "$lib/components/TabBar.svelte";
+  import { MARKDOWN_EXTENSIONS, fileName, isMarkdownPath, type DocumentSource } from "$lib/document-state";
   import {
-    MARKDOWN_EXTENSIONS,
-    fileName,
-    isDocumentDirty,
-    isMarkdownPath,
-    type DocumentSource,
-  } from "$lib/document-state";
+    isTabDirty,
+    moveTab,
+    nextActiveTabId,
+    tabTitle,
+    type Tab,
+    type ViewMode,
+  } from "$lib/tab-state";
 
   type OpenedDocument = {
     path: string;
@@ -52,21 +55,18 @@
     error: string | null;
   };
 
-  let documentSource = $state<DocumentSource | null>(null);
-  // The open folder root. Independent of documentSource — the
-  // explorer stays visible no matter which document (if any) is open,
-  // and opening a document never closes it.
+  let tabs = $state<Tab[]>([]);
+  let activeTabId = $state<string | null>(null);
+  let activeTab = $derived(tabs.find((tab) => tab.id === activeTabId));
+
+  // The open folder root. Independent of tabs — the explorer stays
+  // visible no matter which tabs are open, and opening a document
+  // never closes it.
   let folderRoot = $state<string | null>(null);
   let showHiddenFiles = $state(localStorage.getItem("markive-show-hidden-files") === "true");
   $effect(() => {
     localStorage.setItem("markive-show-hidden-files", String(showHiddenFiles));
   });
-  let renderedHtml = $state("");
-  let sourceText = $state("");
-  // Content as last loaded or saved; null for documents that never
-  // had a file (clipboard, stdin), which stay dirty until saved.
-  let savedText = $state<string | null>(null);
-  let viewMode = $state<"rendered" | "source" | "split">("rendered");
 
   // Appearance: an explicit choice, or the macOS appearance (default).
   type ThemePreference = "light" | "dark" | "system";
@@ -141,11 +141,10 @@
   });
   let errorMessage = $state<string | null>(null);
   let confirmResolve = $state<((choice: "save" | "discard" | "cancel") => void) | null>(null);
-  // External file state: the disk copy changed under local edits, or
-  // the file disappeared.
-  let fileConflict = $state<"conflict" | "missing" | null>(null);
+  // The tab named in the unsaved-changes dialog while it is open.
+  let confirmTabName = $state<string | null>(null);
 
-  // Document-level find.
+  // Document-level find, scoped to the active tab.
   let findOpen = $state(false);
   let findQuery = $state("");
   let findIndex = $state(0);
@@ -159,48 +158,27 @@
     setScrollTop: (top: number) => void;
     undoEdit: () => void;
     redoEdit: () => void;
+    forgetTab: (id: string) => void;
   } | null>(null);
 
-  let isDirty = $derived(isDocumentDirty(documentSource, sourceText, savedText));
+  let isDirty = $derived(activeTab ? isTabDirty(activeTab) : false);
   let isOpening = $state(false);
   let isPasting = $state(false);
   let isDragOver = $state(false);
 
-  // The open document's directory; relative image and link targets in
-  // edited source resolve against it.
-  let baseDir = $derived(
-    documentSource?.kind === "file"
-      ? (documentSource.path.slice(0, documentSource.path.lastIndexOf("/")) ?? null)
-      : null,
-  );
+  function baseDirFor(source: DocumentSource): string | null {
+    return source.kind === "file" ? (source.path.slice(0, source.path.lastIndexOf("/")) ?? null) : null;
+  }
+
+  let baseDir = $derived(activeTab ? baseDirFor(activeTab.source) : null);
 
   let documentName = $derived.by(() => {
-    switch (documentSource?.kind) {
-      case "file":
-        return documentSource.path.split(/[\\/]/).pop() ?? "Markive";
-      case "clipboard":
-        return "Clipboard";
-      case "stdin":
-        return "stdin";
-      case "untitled":
-        return "Untitled";
-      default:
-        return folderRoot ? (folderRoot.split(/[\\/]/).pop() ?? "Markive") : "Markive";
-    }
+    if (activeTab) return tabTitle(activeTab);
+    return folderRoot ? (folderRoot.split(/[\\/]/).pop() ?? "Markive") : "Markive";
   });
   let sourceLabel = $derived.by(() => {
-    switch (documentSource?.kind) {
-      case "file":
-        return documentSource.path;
-      case "clipboard":
-        return "Clipboard";
-      case "stdin":
-        return "Piped from stdin";
-      case "untitled":
-        return "Untitled";
-      default:
-        return folderRoot ?? "No file open";
-    }
+    if (!activeTab) return folderRoot ?? "No file open";
+    return activeTab.source.kind === "file" ? activeTab.source.path : tabTitle(activeTab);
   });
 
   // Wraps every case-insensitive match in the rendered HTML with a
@@ -249,16 +227,18 @@
   // The article shows marked HTML while find is open in a mode with a
   // rendered pane.
   let findResult = $derived.by(() =>
-    findOpen && findQuery && viewMode !== "source"
-      ? markMatches(renderedHtml, findQuery, findIndex)
-      : { html: renderedHtml, count: 0 },
+    findOpen && findQuery && activeTab && activeTab.viewMode !== "source"
+      ? markMatches(activeTab.renderedHtml, findQuery, findIndex)
+      : { html: activeTab?.renderedHtml ?? "", count: 0 },
   );
 
-  let findCount = $derived(viewMode === "rendered" ? findResult.count : sourceFindCount);
+  let findCount = $derived(
+    activeTab?.viewMode === "rendered" ? findResult.count : sourceFindCount,
+  );
 
   // Keep the editor's search query in sync and count its matches.
   $effect(() => {
-    if (findOpen && viewMode !== "rendered") {
+    if (findOpen && activeTab && activeTab.viewMode !== "rendered") {
       sourceFindCount = editorRef?.setFind(findQuery) ?? 0;
     }
   });
@@ -271,13 +251,20 @@
 
   // Bring the active rendered match into view.
   $effect(() => {
-    if (findOpen && viewMode === "rendered" && findResult.count > 0) {
+    if (findOpen && activeTab?.viewMode === "rendered" && findResult.count > 0) {
       document.getElementById(`find-match-${findIndex}`)?.scrollIntoView({ block: "center" });
     }
   });
 
+  // Closing find when the active tab changes avoids showing stale
+  // match state for the newly focused document.
+  $effect(() => {
+    void activeTabId;
+    closeFind();
+  });
+
   function openFind() {
-    if (!documentSource) return;
+    if (!activeTab) return;
     findOpen = true;
     queueMicrotask(() => {
       findInput?.focus();
@@ -288,11 +275,13 @@
   function closeFind() {
     findOpen = false;
     findQuery = "";
-    if (viewMode !== "rendered") editorRef?.setFind("");
+    if (activeTab && activeTab.viewMode !== "rendered") editorRef?.setFind("");
   }
 
   function findStep(direction: 1 | -1) {
-    if (viewMode === "rendered") {
+    if (!activeTab) return;
+
+    if (activeTab.viewMode === "rendered") {
       if (findResult.count === 0) return;
       findIndex = (findIndex + direction + findResult.count) % findResult.count;
       return;
@@ -333,34 +322,85 @@
     return parsed.body.innerHTML;
   }
 
-  async function openDocumentAtPath(path: string, preserveView = false) {
-    const document = await invoke<OpenedDocument>("open_document", { path });
-
-    documentSource = { kind: "file", path: document.path };
-    renderedHtml = convertLocalImageSources(document.html);
-    sourceText = document.content;
-    savedText = document.content;
-    fileConflict = null;
-    if (!preserveView) viewMode = "rendered";
+  async function renderMarkdown(markdown: string, path: string | null): Promise<string> {
+    const html = await invoke<string>("render_source", {
+      markdown,
+      baseDir: path ? path.slice(0, path.lastIndexOf("/")) : null,
+    });
+    return convertLocalImageSources(html);
   }
 
-  // Opening a folder leaves any open document in place — the folder
-  // root and the current document are independent; the explorer just
-  // gives you another way to pick what to open next.
+  // Appends a new tab built from the given fields and focuses it.
+  function openTab(fields: Omit<Tab, "id">): Tab {
+    const tab: Tab = { ...fields, id: crypto.randomUUID() };
+    tabs = [...tabs, tab];
+    switchToTab(tab.id);
+    return tab;
+  }
+
+  // Switches the active tab, snapshotting the outgoing tab's scroll
+  // position first so it's there to restore if the user comes back.
+  function switchToTab(id: string) {
+    if (activeTab) {
+      activeTab.scroll = {
+        rendered: renderedScrollEl?.scrollTop ?? 0,
+        source: editorRef?.getScrollTop() ?? 0,
+      };
+    }
+
+    activeTabId = id;
+
+    requestAnimationFrame(() => {
+      const tab = tabs.find((candidate) => candidate.id === id);
+      if (!tab) return;
+      if (renderedScrollEl) renderedScrollEl.scrollTop = tab.scroll.rendered;
+      editorRef?.setScrollTop(tab.scroll.source);
+    });
+  }
+
+  // Opens `path` in its own tab, or focuses the existing tab for it —
+  // matched first on the given path, then again on the canonical path
+  // the backend resolves it to (symlinks, relative launch paths).
+  async function openPathInTab(path: string) {
+    const existing = tabs.find((tab) => tab.source.kind === "file" && tab.source.path === path);
+    if (existing) {
+      switchToTab(existing.id);
+      return;
+    }
+
+    const document = await invoke<OpenedDocument>("open_document", { path });
+
+    const resolved = tabs.find(
+      (tab) => tab.source.kind === "file" && tab.source.path === document.path,
+    );
+    if (resolved) {
+      switchToTab(resolved.id);
+      return;
+    }
+
+    openTab({
+      source: { kind: "file", path: document.path },
+      sourceText: document.content,
+      savedText: document.content,
+      viewMode: "rendered",
+      renderedHtml: convertLocalImageSources(document.html),
+      scroll: { rendered: 0, source: 0 },
+      conflict: null,
+    });
+  }
+
+  // Opening a folder leaves every open tab in place — the folder root
+  // and the open documents are independent; the explorer just gives
+  // you another way to pick what to open next.
   async function openFolderAtPath(path: string) {
     const opened = await invoke<{ path: string }>("open_folder", { path });
     folderRoot = opened.path;
   }
 
-  // Opens a file selected in the explorer, guarding unsaved changes
-  // in whatever document is currently open — the same rule every
-  // other open path follows.
   async function openFileFromExplorer(path: string) {
-    if (!(await canDiscardDocument())) return;
-
     errorMessage = null;
     try {
-      await openDocumentAtPath(path);
+      await openPathInTab(path);
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : String(error);
     }
@@ -370,17 +410,18 @@
     folderRoot = null;
   }
 
-  // Keep the backend watcher pointed at the current file. Pathless
-  // documents stop the watch.
+  // Keep the backend watcher pointed at the active tab's file.
+  // Background tabs are not watched — only the active one, so
+  // external-change detection is scoped to what's on screen.
   $effect(() => {
-    const path = documentSource?.kind === "file" ? documentSource.path : null;
+    const path = activeTab?.source.kind === "file" ? activeTab.source.path : null;
     void invoke("watch_document", { path }).catch(() => {
       // A file that cannot be watched still works; changes just are
       // not detected.
     });
   });
 
-  /// Asks what to do with unsaved changes. Resolved by the modal.
+  /// Asks what to do with a tab's unsaved changes. Resolved by the modal.
   function confirmLoseChanges(): Promise<"save" | "discard" | "cancel"> {
     return new Promise((resolve) => {
       confirmResolve = (choice) => {
@@ -390,83 +431,114 @@
     });
   }
 
-  // Saves to the current path; documents without one ask for a
-  // location. `alwaysAsk` is Save As. The native dialog confirms
-  // replacing an existing file.
-  async function saveCurrentDocument(alwaysAsk = false): Promise<boolean> {
-    let path = !alwaysAsk && documentSource?.kind === "file" ? documentSource.path : null;
+  // Prompts to save or discard one tab's unsaved changes. Returns
+  // false when the user cancels — the caller should not proceed.
+  async function confirmDiscardTab(tab: Tab): Promise<boolean> {
+    if (!isTabDirty(tab)) return true;
 
-    if (!path) {
-      path = await save({
-        title: "Save Markdown",
-        defaultPath: documentSource?.kind === "file" ? documentName : `${documentName}.md`,
-        filters: [{ name: "Markdown", extensions: MARKDOWN_EXTENSIONS }],
-      });
-      if (!path) return false;
-    }
-
-    await invoke("save_file", { path, content: sourceText });
-    const pathChanged = documentSource?.kind !== "file" || documentSource.path !== path;
-    documentSource = { kind: "file", path };
-    savedText = sourceText;
-    fileConflict = null;
-
-    // A new location changes the base directory; relative images and
-    // links resolve against it from now on.
-    if (pathChanged) await renderCurrentSource();
-
-    return true;
-  }
-
-  async function newDocument() {
-    if (!(await canDiscardDocument())) return;
-
-    documentSource = { kind: "untitled" };
-    fileConflict = null;
-    sourceText = "";
-    savedText = null;
-    renderedHtml = "";
-    errorMessage = null;
-    viewMode = "source";
-  }
-
-  async function saveAsAction(alwaysAsk = false) {
-    if (!documentSource) return;
-
-    errorMessage = null;
-    try {
-      await saveCurrentDocument(alwaysAsk);
-    } catch (error) {
-      errorMessage = error instanceof Error ? error.message : String(error);
-    }
-  }
-
-  function saveAction() {
-    void saveAsAction(false);
-  }
-
-  // Gate for every action that replaces or closes the document.
-  async function canDiscardDocument(): Promise<boolean> {
-    if (!isDirty) return true;
-
+    confirmTabName = tabTitle(tab);
     const choice = await confirmLoseChanges();
+    confirmTabName = null;
     if (choice === "cancel") return false;
     if (choice === "discard") return true;
 
     try {
-      return await saveCurrentDocument();
+      return await saveTab(tab);
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : String(error);
       return false;
     }
   }
 
-  async function renderCurrentSource() {
-    const html = await invoke<string>("render_source", {
-      markdown: sourceText,
-      baseDir,
+  // Saves a tab to its current path; a tab without one asks for a
+  // location. `alwaysAsk` is Save As. The native dialog confirms
+  // replacing an existing file.
+  async function saveTab(tab: Tab, alwaysAsk = false): Promise<boolean> {
+    let path = !alwaysAsk && tab.source.kind === "file" ? tab.source.path : null;
+
+    if (!path) {
+      path = await save({
+        title: "Save Markdown",
+        defaultPath: tab.source.kind === "file" ? tabTitle(tab) : `${tabTitle(tab)}.md`,
+        filters: [{ name: "Markdown", extensions: MARKDOWN_EXTENSIONS }],
+      });
+      if (!path) return false;
+    }
+
+    await invoke("save_file", { path, content: tab.sourceText });
+    const pathChanged = tab.source.kind !== "file" || tab.source.path !== path;
+    tab.source = { kind: "file", path };
+    tab.savedText = tab.sourceText;
+    tab.conflict = null;
+
+    // A new location changes the base directory; relative images and
+    // links resolve against it from now on.
+    if (pathChanged) tab.renderedHtml = await renderMarkdown(tab.sourceText, path);
+
+    return true;
+  }
+
+  function newDocument() {
+    openTab({
+      source: { kind: "untitled" },
+      sourceText: "",
+      savedText: null,
+      viewMode: "source",
+      renderedHtml: "",
+      scroll: { rendered: 0, source: 0 },
+      conflict: null,
     });
-    renderedHtml = convertLocalImageSources(html);
+    errorMessage = null;
+  }
+
+  async function saveTabAction(tab: Tab, alwaysAsk: boolean) {
+    errorMessage = null;
+    try {
+      await saveTab(tab, alwaysAsk);
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  function saveAction() {
+    if (activeTab) void saveTabAction(activeTab, false);
+  }
+
+  async function closeTab(id: string) {
+    const tab = tabs.find((candidate) => candidate.id === id);
+    if (!tab) return;
+    if (!(await confirmDiscardTab(tab))) return;
+
+    editorRef?.forgetTab(id);
+
+    const wasActive = activeTabId === id;
+    const next = wasActive ? nextActiveTabId(tabs, id) : activeTabId;
+    tabs = tabs.filter((candidate) => candidate.id !== id);
+    if (wasActive) activeTabId = next;
+  }
+
+  function reorderTabs(fromIndex: number, toIndex: number) {
+    tabs = moveTab(tabs, fromIndex, toIndex);
+  }
+
+  async function setActiveViewMode(mode: ViewMode) {
+    const tab = activeTab;
+    if (!tab) return;
+
+    try {
+      // Entering a mode that shows rendered output re-renders the
+      // possibly edited source first.
+      if (mode !== "source") tab.renderedHtml = await renderMarkdown(tab.sourceText, baseDirFor(tab.source));
+      tab.viewMode = mode;
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  function cycleViewMode() {
+    if (!activeTab) return;
+    const order = ["rendered", "source", "split"] as const;
+    void setActiveViewMode(order[(order.indexOf(activeTab.viewMode) + 1) % order.length]);
   }
 
   // In Split mode edits re-render live, debounced so a keystroke burst
@@ -475,39 +547,29 @@
   let renderTimer: ReturnType<typeof setTimeout> | undefined;
 
   function handleEdit(value: string) {
-    sourceText = value;
+    const tab = activeTab;
+    if (!tab) return;
 
-    if (viewMode !== "split") return;
+    tab.sourceText = value;
+    if (tab.viewMode !== "split") return;
 
     clearTimeout(renderTimer);
+    const tabId = tab.id;
     renderTimer = setTimeout(() => {
-      renderCurrentSource().catch((error: unknown) => {
-        errorMessage = error instanceof Error ? error.message : String(error);
-      });
+      const target = tabs.find((candidate) => candidate.id === tabId);
+      if (!target) return;
+      renderMarkdown(target.sourceText, baseDirFor(target.source))
+        .then((html) => {
+          target.renderedHtml = html;
+        })
+        .catch((error: unknown) => {
+          errorMessage = error instanceof Error ? error.message : String(error);
+        });
     }, 150);
-  }
-
-  async function setViewMode(mode: typeof viewMode) {
-    if (!documentSource) return;
-
-    try {
-      // Entering a mode that shows rendered output re-renders the
-      // possibly edited source first.
-      if (mode !== "source") await renderCurrentSource();
-      viewMode = mode;
-    } catch (error) {
-      errorMessage = error instanceof Error ? error.message : String(error);
-    }
-  }
-
-  function cycleViewMode() {
-    const order = ["rendered", "source", "split"] as const;
-    void setViewMode(order[(order.indexOf(viewMode) + 1) % order.length]);
   }
 
   async function openFile() {
     if (isOpening) return;
-    if (!(await canDiscardDocument())) return;
 
     isOpening = true;
     errorMessage = null;
@@ -527,7 +589,7 @@
 
       if (!selectedPath) return;
 
-      await openDocumentAtPath(selectedPath);
+      await openPathInTab(selectedPath);
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : String(error);
     } finally {
@@ -537,7 +599,6 @@
 
   async function openFolder() {
     if (isOpening) return;
-    if (!(await canDiscardDocument())) return;
 
     isOpening = true;
     errorMessage = null;
@@ -561,7 +622,6 @@
 
   async function pasteClipboard() {
     if (isPasting) return;
-    if (!(await canDiscardDocument())) return;
 
     isPasting = true;
     errorMessage = null;
@@ -582,7 +642,7 @@
           return;
         }
 
-        await openDocumentAtPath(copiedPath);
+        await openPathInTab(copiedPath);
         return;
       }
 
@@ -593,17 +653,15 @@
         return;
       }
 
-      const html = await invoke<string>("render_source", {
-        markdown: clipboardText,
-        baseDir: null,
+      openTab({
+        source: { kind: "clipboard" },
+        sourceText: clipboardText,
+        savedText: null,
+        viewMode: "rendered",
+        renderedHtml: await renderMarkdown(clipboardText, null),
+        scroll: { rendered: 0, source: 0 },
+        conflict: null,
       });
-
-      fileConflict = null;
-      documentSource = { kind: "clipboard" };
-      renderedHtml = convertLocalImageSources(html);
-      sourceText = clipboardText;
-      savedText = null;
-      viewMode = "rendered";
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : String(error);
     } finally {
@@ -617,33 +675,33 @@
     try {
       if (request.error) {
         errorMessage = request.error;
-      } else if (!(await canDiscardDocument())) {
-        // Keep the current document; a stdin temp file left behind in
-        // the temp dir is cleaned up by the OS.
       } else if (request.path) {
-        await openDocumentAtPath(request.path);
+        await openPathInTab(request.path);
       } else if (request.folderPath) {
         await openFolderAtPath(request.folderPath);
       } else if (request.stdinPath) {
         const stdinDocument = await invoke<StdinDocument>("open_stdin_document", {
           path: request.stdinPath,
         });
-        fileConflict = null;
-        documentSource = { kind: "stdin" };
-        renderedHtml = convertLocalImageSources(stdinDocument.html);
-        sourceText = stdinDocument.content;
-        savedText = null;
-        viewMode = "rendered";
+        openTab({
+          source: { kind: "stdin" },
+          sourceText: stdinDocument.content,
+          savedText: null,
+          viewMode: "rendered",
+          renderedHtml: convertLocalImageSources(stdinDocument.html),
+          scroll: { rendered: 0, source: 0 },
+          conflict: null,
+        });
       }
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : String(error);
     }
   }
+
   async function openDroppedFiles(paths: string[]) {
     errorMessage = null;
 
     if (paths.length === 0) return;
-    if (!(await canDiscardDocument())) return;
 
     if (paths.length > 1) {
       errorMessage = "Multiple files were dropped. Drop one Markdown file.";
@@ -658,7 +716,7 @@
     }
 
     try {
-      await openDocumentAtPath(droppedPath);
+      await openPathInTab(droppedPath);
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : String(error);
     }
@@ -683,16 +741,22 @@
     };
   });
 
-  // The saved session: last document, unsaved edits, view mode, and
-  // scroll positions. Quit (cmd+Q) is deliberately unguarded (#9), so
-  // unsaved edits must survive through here to make quitting lossless.
-  type Session = {
-    source: DocumentSource | null;
-    folderRoot: string | null;
-    viewMode: typeof viewMode;
+  // The saved session: every open tab, which one was active, the
+  // folder root, and each tab's unsaved edits, view mode, and scroll
+  // position. Quit (cmd+Q) is deliberately unguarded (#9), so unsaved
+  // edits must survive through here to make quitting lossless.
+  type TabSnapshot = {
+    source: DocumentSource;
+    viewMode: ViewMode;
     sourceText: string;
     savedText: string | null;
     scroll: { rendered: number; source: number };
+  };
+
+  type Session = {
+    tabs: TabSnapshot[];
+    activeIndex: number;
+    folderRoot: string | null;
   };
 
   // Saving starts only after startup settles, so a half-restored state
@@ -706,19 +770,31 @@
 
     clearTimeout(sessionTimer);
     sessionTimer = setTimeout(() => {
-      const session =
-        documentSource || folderRoot
-          ? ({
-              source: documentSource,
+      // Refresh the active tab's scroll position in case the debounce
+      // fires without a tab switch in between.
+      if (activeTab) {
+        activeTab.scroll = {
+          rendered: renderedScrollEl?.scrollTop ?? 0,
+          source: editorRef?.getScrollTop() ?? 0,
+        };
+      }
+
+      const session: Session | null =
+        tabs.length > 0 || folderRoot
+          ? {
+              tabs: tabs.map((tab) => ({
+                source: tab.source,
+                viewMode: tab.viewMode,
+                sourceText: tab.sourceText,
+                savedText: tab.savedText,
+                scroll: tab.scroll,
+              })),
+              activeIndex: Math.max(
+                0,
+                tabs.findIndex((tab) => tab.id === activeTabId),
+              ),
               folderRoot,
-              viewMode,
-              sourceText: documentSource ? sourceText : "",
-              savedText: documentSource ? savedText : null,
-              scroll: {
-                rendered: renderedScrollEl?.scrollTop ?? 0,
-                source: editorRef?.getScrollTop() ?? 0,
-              },
-            } satisfies Session)
+            }
           : null;
       void invoke("save_session", { session }).catch(() => {
         // A session that fails to save costs one restore, nothing more.
@@ -726,10 +802,10 @@
     }, 300);
   }
 
-  // Document, folder, edits, and view mode changes schedule a save;
-  // scroll is captured by the window listener below.
+  // Tabs, folder, and edits schedule a save; scroll is captured by the
+  // window listener below.
   $effect(() => {
-    void [documentSource, folderRoot, sourceText, savedText, viewMode];
+    void [tabs, folderRoot];
     scheduleSessionSave();
   });
 
@@ -755,47 +831,71 @@
       }
     }
 
-    if (!session.source) return;
+    if (!session.tabs || session.tabs.length === 0) return;
 
-    try {
-      if (session.source.kind === "file") {
-        await openDocumentAtPath(session.source.path, true);
+    const restored: Tab[] = [];
+    for (const snapshot of session.tabs) {
+      try {
+        if (snapshot.source.kind === "file") {
+          const document = await invoke<OpenedDocument>("open_document", {
+            path: snapshot.source.path,
+          });
+          const diskContent = document.content;
+          const sourceText = snapshot.sourceText;
 
-        // The stored buffer differs from disk: restore the unsaved
-        // edits. When disk also moved on since the last run, the
-        // conflict banner offers the reload.
-        if (session.sourceText !== sourceText) {
-          const diskContent = sourceText;
-          sourceText = session.sourceText;
-          if (session.savedText !== null && session.savedText !== diskContent) {
-            fileConflict = "conflict";
-          }
-          await renderCurrentSource();
+          // The stored buffer differs from disk: keep the unsaved
+          // edits. When disk also moved on since the last run, the
+          // conflict banner offers the reload.
+          const conflict: Tab["conflict"] =
+            sourceText !== diskContent &&
+            snapshot.savedText !== null &&
+            snapshot.savedText !== diskContent
+              ? "conflict"
+              : null;
+
+          restored.push({
+            id: crypto.randomUUID(),
+            source: { kind: "file", path: document.path },
+            sourceText,
+            savedText: snapshot.savedText,
+            viewMode: snapshot.viewMode ?? "rendered",
+            renderedHtml: await renderMarkdown(sourceText, document.path),
+            scroll: snapshot.scroll ?? { rendered: 0, source: 0 },
+            conflict,
+          });
+        } else if (snapshot.sourceText) {
+          // Pathless documents (clipboard, stdin, untitled) restore
+          // from the stored buffer alone; an empty one is not worth
+          // showing.
+          restored.push({
+            id: crypto.randomUUID(),
+            source: snapshot.source,
+            sourceText: snapshot.sourceText,
+            savedText: snapshot.savedText,
+            viewMode: snapshot.viewMode ?? "rendered",
+            renderedHtml: await renderMarkdown(snapshot.sourceText, null),
+            scroll: snapshot.scroll ?? { rendered: 0, source: 0 },
+            conflict: null,
+          });
         }
-      } else {
-        // Pathless documents (clipboard, stdin, untitled) restore from
-        // the stored buffer alone; an empty one is not worth showing.
-        if (!session.sourceText) return;
-        documentSource = session.source;
-        sourceText = session.sourceText;
-        savedText = session.savedText;
-        await renderCurrentSource();
+      } catch {
+        // That tab's file is gone or unreadable: drop just that tab
+        // rather than failing the whole restore.
       }
-
-      viewMode = session.viewMode ?? "rendered";
-
-      // Scroll restores after the restored mode has rendered.
-      requestAnimationFrame(() => {
-        if (renderedScrollEl) renderedScrollEl.scrollTop = session.scroll?.rendered ?? 0;
-        editorRef?.setScrollTop(session.scroll?.source ?? 0);
-      });
-    } catch {
-      // The file is gone or unreadable: fall back to the empty state.
-      documentSource = null;
-      sourceText = "";
-      savedText = null;
-      renderedHtml = "";
     }
+
+    if (restored.length === 0) return;
+
+    tabs = restored;
+    const activeIndex = Math.min(Math.max(session.activeIndex ?? 0, 0), restored.length - 1);
+    activeTabId = restored[activeIndex].id;
+
+    requestAnimationFrame(() => {
+      const tab = activeTab;
+      if (!tab) return;
+      if (renderedScrollEl) renderedScrollEl.scrollTop = tab.scroll.rendered;
+      editorRef?.setScrollTop(tab.scroll.source);
+    });
   }
 
   // Open a document passed on the command line (`markive path.md`),
@@ -816,25 +916,27 @@
     }
   })();
 
-  // External changes to the open file, reported by the backend watcher.
+  // External changes to the active tab's file, reported by the
+  // backend watcher (only the active tab is watched).
   async function handleFileChange(kind: string) {
-    if (documentSource?.kind !== "file") return;
+    const tab = activeTab;
+    if (!tab || tab.source.kind !== "file") return;
 
     if (kind === "removed") {
-      fileConflict = "missing";
+      tab.conflict = "missing";
       // The disk copy is gone; the buffer is the only copy and needs
       // saving again.
-      savedText = null;
+      tab.savedText = null;
       return;
     }
 
-    if (isDirty) {
-      fileConflict = "conflict";
+    if (isTabDirty(tab)) {
+      tab.conflict = "conflict";
       return;
     }
 
     try {
-      await openDocumentAtPath(documentSource.path, true);
+      await reloadTabContent(tab.id);
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : String(error);
     }
@@ -849,10 +951,23 @@
     };
   });
 
+  // Re-reads a file tab's content from disk in place, replacing its
+  // buffer without changing its identity or position among the tabs.
+  async function reloadTabContent(tabId: string) {
+    const tab = tabs.find((candidate) => candidate.id === tabId);
+    if (!tab || tab.source.kind !== "file") return;
+
+    const document = await invoke<OpenedDocument>("open_document", { path: tab.source.path });
+    tab.sourceText = document.content;
+    tab.savedText = document.content;
+    tab.renderedHtml = convertLocalImageSources(document.html);
+    tab.conflict = null;
+  }
+
   async function reloadFromDisk() {
-    if (documentSource?.kind !== "file") return;
+    if (!activeTab || activeTab.source.kind !== "file") return;
     try {
-      await openDocumentAtPath(documentSource.path, true);
+      await reloadTabContent(activeTab.id);
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : String(error);
     }
@@ -885,7 +1000,7 @@
   function handleMenuAction(action: string) {
     switch (action) {
       case "new":
-        void newDocument();
+        newDocument();
         break;
       case "open":
         void openFile();
@@ -903,19 +1018,25 @@
         saveAction();
         break;
       case "save-as":
-        void saveAsAction(true);
+        if (activeTab) void saveTabAction(activeTab, true);
         break;
       case "find":
-        if (documentSource) openFind();
+        openFind();
         break;
       case "view-rendered":
-        void setViewMode("rendered");
+        void setActiveViewMode("rendered");
         break;
       case "view-source":
-        void setViewMode("source");
+        void setActiveViewMode("source");
         break;
       case "view-split":
-        void setViewMode("split");
+        void setActiveViewMode("split");
+        break;
+      case "close-tab":
+        if (activeTabId) void closeTab(activeTabId);
+        break;
+      case "close-window":
+        void getCurrentWindow().close();
         break;
       case "theme-light":
         themePreference = "light";
@@ -941,11 +1062,11 @@
     };
   });
 
-  // Menu enabled/checked state follows the document.
+  // Menu enabled/checked state follows the active tab.
   $effect(() => {
     void invoke("set_menu_state", {
-      hasDocument: documentSource !== null,
-      viewMode,
+      hasDocument: activeTab !== undefined,
+      viewMode: activeTab?.viewMode ?? "rendered",
       theme: themePreference,
     }).catch(() => {
       // A menu that lags the document state is not worth surfacing.
@@ -977,14 +1098,17 @@
       });
   });
 
-  // Closing the window guards unsaved changes. Quit (cmd+Q) is
-  // deliberately unguarded, following the macOS document model; #15
-  // makes quit lossless by restoring the session including unsaved
-  // edits.
+  // Closing the window guards every dirty tab's unsaved changes. Quit
+  // (cmd+Q) is deliberately unguarded, following the macOS document
+  // model; #15 makes quit lossless by restoring the session including
+  // unsaved edits.
   onMount(() => {
     const unlistenClose = getCurrentWindow().onCloseRequested(async (event) => {
-      if (!(await canDiscardDocument())) {
-        event.preventDefault();
+      for (const tab of tabs) {
+        if (!(await confirmDiscardTab(tab))) {
+          event.preventDefault();
+          return;
+        }
       }
     });
 
@@ -1016,7 +1140,7 @@
           return;
         }
 
-        await openDocumentAtPath(path);
+        await openPathInTab(path);
         return;
       }
 
@@ -1027,7 +1151,8 @@
   }
 
   // Shortcuts without a native menu item. Everything the menu declares
-  // (⌘N, ⌘O, ⌘S, ⇧⌘S, ⌘F, ⌘1–3) arrives as a menu-action event instead.
+  // (⌘N, ⌘O, ⌘S, ⇧⌘S, ⌘F, ⌘1–3, ⌘W, ⇧⌘W) arrives as a menu-action
+  // event instead.
   function handleKeydown(event: KeyboardEvent) {
     if (event.key === "Escape" && settingsOpen) {
       settingsOpen = false;
@@ -1049,7 +1174,7 @@
       return;
     }
 
-    if (key === "e" && documentSource) {
+    if (key === "e" && activeTab) {
       event.preventDefault();
       cycleViewMode();
       return;
@@ -1096,7 +1221,7 @@
               <Eye aria-hidden="true" class="size-3.5" />
             {/if}
           </Button>
-          <Button variant="ghost" size="icon" aria-label="Close folder" onclick={closeFolder}>
+          <Button variant="ghost" size="icon-sm" aria-label="Close folder" onclick={closeFolder}>
             <X aria-hidden="true" class="size-3.5" />
           </Button>
         </div>
@@ -1104,15 +1229,21 @@
       <Explorer
         rootPath={folderRoot}
         showHidden={showHiddenFiles}
-        activePath={documentSource?.kind === "file" ? documentSource.path : null}
+        activePath={activeTab?.source.kind === "file" ? activeTab.source.path : null}
         isActiveDirty={isDirty}
         onOpenFile={openFileFromExplorer}
       />
     </aside>
   {/if}
   <main
-    class={`grid min-w-0 flex-1 grid-rows-[2.75rem_auto_auto_1fr] ${isDragOver ? "ring-2 ring-inset ring-ring" : ""}`}
+    class={`grid min-w-0 flex-1 grid-rows-[auto_2.75rem_auto_auto_1fr] ${isDragOver ? "ring-2 ring-inset ring-ring" : ""}`}
   >
+  {#if tabs.length > 0}
+    <TabBar {tabs} {activeTabId} onSelect={switchToTab} onClose={closeTab} onReorder={reorderTabs} />
+  {:else}
+    <div></div>
+  {/if}
+
   <header class="path-rail flex items-center justify-between gap-4 border-b border-border px-4">
     <div class="flex min-w-0 items-center gap-2 font-mono text-xs text-muted-foreground">
       <FileText aria-hidden="true" class="size-3.5 shrink-0" strokeWidth={1.75} />
@@ -1121,38 +1252,38 @@
         <span class="shrink-0 text-foreground" title="Unsaved changes" aria-label="Unsaved changes">•</span>
       {/if}
     </div>
-    {#if documentSource}
+    {#if activeTab}
       <div class="flex items-center gap-1">
         <div class="mr-2 flex items-center rounded-md border border-border p-0.5" role="group" aria-label="View mode">
           <Button
-            variant={viewMode === "rendered" ? "secondary" : "ghost"}
+            variant={activeTab.viewMode === "rendered" ? "secondary" : "ghost"}
             size="sm"
-            aria-pressed={viewMode === "rendered"}
-            onclick={() => void setViewMode("rendered")}
+            aria-pressed={activeTab.viewMode === "rendered"}
+            onclick={() => void setActiveViewMode("rendered")}
           >
             <Eye data-icon="inline-start" aria-hidden="true" />
             Rendered
           </Button>
           <Button
-            variant={viewMode === "source" ? "secondary" : "ghost"}
+            variant={activeTab.viewMode === "source" ? "secondary" : "ghost"}
             size="sm"
-            aria-pressed={viewMode === "source"}
-            onclick={() => void setViewMode("source")}
+            aria-pressed={activeTab.viewMode === "source"}
+            onclick={() => void setActiveViewMode("source")}
           >
             <Code data-icon="inline-start" aria-hidden="true" />
             Source
           </Button>
           <Button
-            variant={viewMode === "split" ? "secondary" : "ghost"}
+            variant={activeTab.viewMode === "split" ? "secondary" : "ghost"}
             size="sm"
-            aria-pressed={viewMode === "split"}
-            onclick={() => void setViewMode("split")}
+            aria-pressed={activeTab.viewMode === "split"}
+            onclick={() => void setActiveViewMode("split")}
           >
             <Columns2 data-icon="inline-start" aria-hidden="true" />
             Split
           </Button>
         </div>
-        <Button variant="ghost" size="sm" onclick={() => void newDocument()}>
+        <Button variant="ghost" size="sm" onclick={newDocument}>
           <FilePlus data-icon="inline-start" aria-hidden="true" />
           New
         </Button>
@@ -1172,26 +1303,26 @@
     {/if}
   </header>
 
-  {#if fileConflict}
+  {#if activeTab?.conflict}
     <div
       class="flex items-center justify-between gap-4 border-b border-border bg-secondary px-4 py-2"
       role="alert"
     >
       <p class="min-w-0 truncate text-sm">
-        {fileConflict === "missing"
+        {activeTab.conflict === "missing"
           ? "The file was deleted or moved on disk. Your text is only in this window until you save it."
           : "The file changed on disk while you have unsaved edits."}
       </p>
       <div class="flex shrink-0 items-center gap-1">
-        {#if fileConflict === "conflict"}
+        {#if activeTab.conflict === "conflict"}
           <Button variant="outline" size="sm" onclick={() => void reloadFromDisk()}>
             Reload from Disk
           </Button>
         {/if}
-        <Button variant="outline" size="sm" onclick={() => void saveAsAction(true)}>
+        <Button variant="outline" size="sm" onclick={() => activeTab && void saveTabAction(activeTab, true)}>
           Save As
         </Button>
-        <Button variant="ghost" size="sm" onclick={() => (fileConflict = null)}>
+        <Button variant="ghost" size="sm" onclick={() => activeTab && (activeTab.conflict = null)}>
           Keep Editing
         </Button>
       </div>
@@ -1221,7 +1352,7 @@
           &nbsp;
         {:else if findCount === 0}
           No matches
-        {:else if viewMode === "rendered"}
+        {:else if activeTab?.viewMode === "rendered"}
           {findIndex + 1} of {findCount}
         {:else}
           {findCount} {findCount === 1 ? "match" : "matches"}
@@ -1255,45 +1386,36 @@
     <div></div>
   {/if}
 
-  {#if documentSource}
-    {#if viewMode === "source"}
-      <section class="grid min-h-0 grid-rows-[auto_1fr] bg-card" aria-label={`Source of ${documentName}`}>
-        {#if errorMessage}
-          <p class="border-b border-border px-8 py-2 text-sm text-destructive" role="alert">
-            {errorMessage}
-          </p>
-        {:else}
-          <div></div>
-        {/if}
-        <Editor
-              bind:this={editorRef}
-              value={sourceText}
-              dark={isDark}
-              fontSize={editorFontSize}
-              lineWrap={preferences.lineWrap}
-              onchange={handleEdit}
-            />
-      </section>
-    {:else if viewMode === "split"}
-      <section class="grid min-h-0 grid-rows-[auto_1fr] bg-card" aria-label={`Split view of ${documentName}`}>
-        {#if errorMessage}
-          <p class="border-b border-border px-8 py-2 text-sm text-destructive" role="alert">
-            {errorMessage}
-          </p>
-        {:else}
-          <div></div>
-        {/if}
-        <div class="grid min-h-0 grid-cols-2">
-          <div class="min-h-0 border-r border-border">
-            <Editor
-              bind:this={editorRef}
-              value={sourceText}
-              dark={isDark}
-              fontSize={editorFontSize}
-              lineWrap={preferences.lineWrap}
-              onchange={handleEdit}
-            />
-          </div>
+  {#if activeTab}
+    <!-- The editor stays mounted across every view mode so each tab's
+         CodeMirror selection and undo history survive switching away
+         and back — only visibility and layout change. -->
+    <section
+      class="grid min-h-0 grid-rows-[auto_1fr] bg-card"
+      aria-label={`${activeTab.viewMode === "split" ? "Split view" : activeTab.viewMode === "source" ? "Source" : "Rendered"} of ${documentName}`}
+    >
+      {#if errorMessage}
+        <p class="border-b border-border px-8 py-2 text-sm text-destructive" role="alert">
+          {errorMessage}
+        </p>
+      {:else}
+        <div></div>
+      {/if}
+      <div class={`grid min-h-0 ${activeTab.viewMode === "split" ? "grid-cols-2" : "grid-cols-1"}`}>
+        <div
+          class={`min-h-0 ${activeTab.viewMode === "split" ? "border-r border-border" : ""} ${activeTab.viewMode === "rendered" ? "hidden" : ""}`}
+        >
+          <Editor
+            bind:this={editorRef}
+            tabId={activeTab.id}
+            value={activeTab.sourceText}
+            dark={isDark}
+            fontSize={editorFontSize}
+            lineWrap={preferences.lineWrap}
+            onchange={handleEdit}
+          />
+        </div>
+        {#if activeTab.viewMode !== "source"}
           <!-- Focusable so the preview scrolls with arrow keys alone —
                the WAI pattern for scrollable regions, which this a11y
                rule does not model. -->
@@ -1309,29 +1431,9 @@
               {@html findResult.html}
             </article>
           </div>
-        </div>
-      </section>
-    {:else}
-      <!-- Focusable so the document scrolls with arrow keys alone —
-           the WAI pattern for scrollable regions, which this a11y rule
-           does not model. -->
-      <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-      <section
-        class="min-h-0 overflow-auto bg-card focus-visible:outline-2 focus-visible:outline-ring"
-        bind:this={renderedScrollEl}
-        tabindex="0"
-        aria-label={`Rendered ${documentName}`}
-      >
-        {#if errorMessage}
-          <p class="border-b border-border px-8 py-2 text-sm text-destructive" role="alert">
-            {errorMessage}
-          </p>
         {/if}
-        <article class="markdown mx-auto w-full px-8 py-14" style={`max-width: ${proseWidth}`}>
-          {@html findResult.html}
-        </article>
-      </section>
-    {/if}
+      </div>
+    </section>
   {:else if folderRoot}
     <section class="grid place-items-center px-6">
       <div class="max-w-sm text-center">
@@ -1341,7 +1443,7 @@
           Select a Markdown file in the sidebar, or open one from disk.
         </p>
         <div class="mt-6 flex justify-center gap-2">
-          <Button variant="outline" size="lg" onclick={() => void newDocument()}>
+          <Button variant="outline" size="lg" onclick={newDocument}>
             <FilePlus data-icon="inline-start" aria-hidden="true" />
             New
           </Button>
@@ -1366,7 +1468,7 @@
           Open a file from disk, or paste Markdown without creating one.
         </p>
         <div class="mt-6 flex flex-wrap justify-center gap-2">
-          <Button variant="outline" size="lg" onclick={() => void newDocument()}>
+          <Button variant="outline" size="lg" onclick={newDocument}>
             <FilePlus data-icon="inline-start" aria-hidden="true" />
             New
           </Button>
@@ -1402,7 +1504,7 @@
     <div class="w-full max-w-sm rounded-lg border border-border bg-background p-6 shadow-lg">
       <h2 id="confirm-title" class="text-base font-medium">Unsaved changes</h2>
       <p class="mt-2 text-sm text-muted-foreground">
-        {documentName} has unsaved changes. Save them before continuing?
+        {confirmTabName} has unsaved changes. Save them before continuing?
       </p>
       <div class="mt-6 flex justify-end gap-2">
         <Button variant="ghost" size="sm" onclick={() => confirmResolve?.("cancel")}>
