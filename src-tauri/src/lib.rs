@@ -224,13 +224,30 @@ async fn open_folder(path: String) -> Result<OpenedFolder, String> {
     Ok(OpenedFolder { path: absolute })
 }
 
-#[derive(serde::Serialize)]
+#[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct FolderEntry {
     name: String,
     path: String,
     is_dir: bool,
     is_symlink: bool,
+}
+
+/// Builds a `FolderEntry` for a path that already exists on disk,
+/// canonicalizing it the same way `list_folder_entries` does so
+/// callers (rename, move, create) return something a tree already
+/// keyed on canonical paths can use directly.
+fn describe_entry(path: &std::path::Path) -> Option<FolderEntry> {
+    let metadata = std::fs::metadata(path).ok()?;
+    let is_symlink = std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink());
+    let canonical = std::fs::canonicalize(path).ok()?;
+
+    Some(FolderEntry {
+        name: path.file_name()?.to_string_lossy().into_owned(),
+        path: canonical.to_string_lossy().into_owned(),
+        is_dir: metadata.is_dir(),
+        is_symlink,
+    })
 }
 
 /// Lists one directory level: every subfolder plus every Markdown
@@ -263,27 +280,13 @@ fn list_folder_entries(path: &std::path::Path) -> Result<Vec<FolderEntry>, Strin
     let mut entries = Vec::new();
     for entry in read_dir.flatten() {
         let entry_path = entry.path();
-
-        let Ok(metadata) = std::fs::metadata(&entry_path) else {
-            continue;
-        };
-        let is_dir = metadata.is_dir();
-        if !is_dir && !markive_core::is_markdown_path(&entry_path) {
+        if !entry_path.is_dir() && !markive_core::is_markdown_path(&entry_path) {
             continue;
         }
 
-        let is_symlink = std::fs::symlink_metadata(&entry_path)
-            .is_ok_and(|metadata| metadata.file_type().is_symlink());
-        let Ok(canonical) = std::fs::canonicalize(&entry_path) else {
-            continue;
-        };
-
-        entries.push(FolderEntry {
-            name: entry.file_name().to_string_lossy().into_owned(),
-            path: canonical.to_string_lossy().into_owned(),
-            is_dir,
-            is_symlink,
-        });
+        if let Some(described) = describe_entry(&entry_path) {
+            entries.push(described);
+        }
     }
 
     entries.sort_by(|a, b| {
@@ -297,6 +300,122 @@ fn list_folder_entries(path: &std::path::Path) -> Result<Vec<FolderEntry>, Strin
 #[tauri::command]
 async fn read_folder_entries(path: String) -> Result<Vec<FolderEntry>, String> {
     list_folder_entries(std::path::Path::new(&path))
+}
+
+/// Appends `.md` when `name` has no recognized Markdown extension, so
+/// a file created through the explorer always shows up in it — the
+/// listing filters to Markdown files only.
+fn with_markdown_extension(name: &str) -> String {
+    if markive_core::is_markdown_path(std::path::Path::new(name)) {
+        name.to_string()
+    } else {
+        format!("{name}.md")
+    }
+}
+
+/// Names the conflicting entry in an error, falling back to the full
+/// path when it has no file name (shouldn't happen for a real entry).
+fn name_conflict_error(path: &std::path::Path) -> String {
+    let name = path
+        .file_name()
+        .map_or_else(|| path.display().to_string(), |name| name.to_string_lossy().into_owned());
+    format!("{name} already exists")
+}
+
+/// Creates an empty Markdown file inside `parent_dir`. Refuses to
+/// overwrite an existing entry — the caller sees a conflict error and
+/// nothing on disk changes.
+///
+/// # Errors
+///
+/// Returns a message suitable for display when the name is already
+/// taken or the file cannot be created (missing parent, permission).
+fn create_file_at(parent_dir: &str, name: &str) -> Result<FolderEntry, String> {
+    let path = std::path::Path::new(parent_dir).join(with_markdown_extension(name));
+    if path.exists() {
+        return Err(name_conflict_error(&path));
+    }
+
+    std::fs::write(&path, "")
+        .map_err(|error| format!("Unable to create {}: {error}", path.display()))?;
+    describe_entry(&path).ok_or_else(|| format!("Unable to resolve {} after creating it", path.display()))
+}
+
+#[tauri::command]
+async fn create_file(parent_dir: String, name: String) -> Result<FolderEntry, String> {
+    create_file_at(&parent_dir, &name)
+}
+
+/// Creates a folder inside `parent_dir`. Refuses to overwrite an
+/// existing entry.
+///
+/// # Errors
+///
+/// Returns a message suitable for display when the name is already
+/// taken or the folder cannot be created (missing parent, permission).
+fn create_folder_at(parent_dir: &str, name: &str) -> Result<FolderEntry, String> {
+    let path = std::path::Path::new(parent_dir).join(name);
+    if path.exists() {
+        return Err(name_conflict_error(&path));
+    }
+
+    std::fs::create_dir(&path)
+        .map_err(|error| format!("Unable to create {}: {error}", path.display()))?;
+    describe_entry(&path).ok_or_else(|| format!("Unable to resolve {} after creating it", path.display()))
+}
+
+#[tauri::command]
+async fn create_folder(parent_dir: String, name: String) -> Result<FolderEntry, String> {
+    create_folder_at(&parent_dir, &name)
+}
+
+/// Renames or moves a file or folder. Covers both: a rename is a move
+/// within the same parent, a move keeps the same name in a new
+/// parent. Refuses to overwrite an existing entry at the destination
+/// — the source is left untouched rather than silently replacing
+/// something (`fs::rename` would otherwise overwrite an existing
+/// destination file on Unix).
+///
+/// # Errors
+///
+/// Returns a message suitable for display when the source is gone,
+/// the destination is already taken, or the underlying rename fails
+/// (permission, or a destination on a different filesystem).
+fn move_entry_to(from: &str, to: &str) -> Result<FolderEntry, String> {
+    let from_path = std::path::Path::new(from);
+    let to_path = std::path::Path::new(to);
+
+    if !from_path.exists() {
+        return Err(format!("{from} no longer exists"));
+    }
+    if to_path.exists() {
+        return Err(name_conflict_error(to_path));
+    }
+
+    std::fs::rename(from_path, to_path)
+        .map_err(|error| format!("Unable to move {} to {}: {error}", from_path.display(), to_path.display()))?;
+    describe_entry(to_path).ok_or_else(|| format!("Unable to resolve {} after moving it", to_path.display()))
+}
+
+#[tauri::command]
+async fn move_entry(from: String, to: String) -> Result<FolderEntry, String> {
+    move_entry_to(&from, &to)
+}
+
+/// Moves a file or folder to the operating system's trash rather than
+/// deleting it outright.
+///
+/// # Errors
+///
+/// Returns a message suitable for display when the item cannot be
+/// trashed (missing, permission, no trash available).
+fn delete_entry_at(path: &str) -> Result<(), String> {
+    trash::delete(path).map_err(|error| format!("Unable to move {path} to the trash: {error}"))
+}
+
+#[tauri::command]
+async fn delete_entry(path: String) -> Result<(), String> {
+    delete_entry_at(&path)
 }
 
 #[cfg(test)]
@@ -407,6 +526,151 @@ mod folder_entry_tests {
     #[test]
     fn missing_folder_is_reported() {
         assert!(list_folder_entries(std::path::Path::new("/nonexistent/markive-folder")).is_err());
+    }
+}
+
+#[cfg(test)]
+mod file_ops_tests {
+    use super::{
+        create_file_at, create_folder_at, delete_entry_at, describe_entry, move_entry_to,
+        with_markdown_extension,
+    };
+
+    struct TestDir(std::path::PathBuf);
+
+    impl TestDir {
+        fn new(name: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("{name}-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).expect("create test dir");
+            Self(dir)
+        }
+
+        fn path(&self, name: &str) -> String {
+            self.0.join(name).to_string_lossy().into_owned()
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn appends_md_when_the_name_has_no_markdown_extension() {
+        assert_eq!(with_markdown_extension("Untitled"), "Untitled.md");
+        assert_eq!(with_markdown_extension("notes.md"), "notes.md");
+        assert_eq!(with_markdown_extension("notes.MARKDOWN"), "notes.MARKDOWN");
+        assert_eq!(with_markdown_extension("archive.tar.gz"), "archive.tar.gz.md");
+    }
+
+    #[test]
+    fn creates_an_empty_markdown_file() {
+        let dir = TestDir::new("markive-create-file");
+
+        let entry = create_file_at(&dir.0.to_string_lossy(), "Untitled").expect("create file");
+
+        assert_eq!(entry.name, "Untitled.md");
+        assert!(!entry.is_dir);
+        assert_eq!(std::fs::read_to_string(dir.path("Untitled.md")).expect("read created file"), "");
+    }
+
+    #[test]
+    fn refuses_to_overwrite_an_existing_file() {
+        let dir = TestDir::new("markive-create-file-conflict");
+        std::fs::write(dir.path("Untitled.md"), "already here").expect("seed existing file");
+
+        let error =
+            create_file_at(&dir.0.to_string_lossy(), "Untitled").expect_err("reject existing name");
+
+        assert!(error.contains("already exists"), "unexpected error: {error}");
+        assert_eq!(
+            std::fs::read_to_string(dir.path("Untitled.md")).expect("read existing file"),
+            "already here",
+            "the existing file must be untouched",
+        );
+    }
+
+    #[test]
+    fn creates_a_folder() {
+        let dir = TestDir::new("markive-create-folder");
+
+        let entry = create_folder_at(&dir.0.to_string_lossy(), "Notes").expect("create folder");
+
+        assert_eq!(entry.name, "Notes");
+        assert!(entry.is_dir);
+        assert!(std::path::Path::new(&dir.path("Notes")).is_dir());
+    }
+
+    #[test]
+    fn renames_a_file_within_the_same_folder() {
+        let dir = TestDir::new("markive-rename");
+        std::fs::write(dir.path("old.md"), "# hi").expect("write test file");
+
+        let entry = move_entry_to(&dir.path("old.md"), &dir.path("new.md")).expect("rename file");
+
+        assert_eq!(entry.name, "new.md");
+        assert!(!std::path::Path::new(&dir.path("old.md")).exists());
+        assert_eq!(std::fs::read_to_string(dir.path("new.md")).expect("read renamed file"), "# hi");
+    }
+
+    #[test]
+    fn moves_a_file_into_a_different_folder() {
+        let dir = TestDir::new("markive-move");
+        std::fs::create_dir(dir.0.join("subfolder")).expect("create subfolder");
+        std::fs::write(dir.path("note.md"), "# hi").expect("write test file");
+
+        let destination = dir.0.join("subfolder").join("note.md").to_string_lossy().into_owned();
+        let entry = move_entry_to(&dir.path("note.md"), &destination).expect("move file");
+
+        assert_eq!(entry.name, "note.md");
+        assert!(!std::path::Path::new(&dir.path("note.md")).exists());
+        assert!(std::path::Path::new(&destination).exists());
+    }
+
+    #[test]
+    fn refuses_to_overwrite_an_existing_destination() {
+        let dir = TestDir::new("markive-move-conflict");
+        std::fs::write(dir.path("a.md"), "A").expect("write a");
+        std::fs::write(dir.path("b.md"), "B").expect("write b");
+
+        let error = move_entry_to(&dir.path("a.md"), &dir.path("b.md"))
+            .expect_err("reject existing destination");
+
+        assert!(error.contains("already exists"), "unexpected error: {error}");
+        assert_eq!(std::fs::read_to_string(dir.path("a.md")).expect("read source"), "A");
+        assert_eq!(std::fs::read_to_string(dir.path("b.md")).expect("read destination"), "B");
+    }
+
+    #[test]
+    fn moving_a_missing_source_fails_cleanly() {
+        let dir = TestDir::new("markive-move-missing");
+
+        let error = move_entry_to(&dir.path("gone.md"), &dir.path("elsewhere.md"))
+            .expect_err("reject a missing source");
+
+        assert!(error.contains("no longer exists"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn deletes_a_file_to_the_trash() {
+        let dir = TestDir::new("markive-delete");
+        std::fs::write(dir.path("gone.md"), "bye").expect("write test file");
+
+        delete_entry_at(&dir.path("gone.md")).expect("trash the file");
+
+        assert!(!std::path::Path::new(&dir.path("gone.md")).exists());
+    }
+
+    #[test]
+    fn describe_entry_reports_directories() {
+        let dir = TestDir::new("markive-describe");
+        std::fs::create_dir(dir.0.join("child")).expect("create child dir");
+
+        let described = describe_entry(&dir.0.join("child")).expect("describe child dir");
+
+        assert_eq!(described.name, "child");
+        assert!(described.is_dir);
     }
 }
 
@@ -1131,6 +1395,10 @@ pub fn run(launch: Launch) {
             open_document,
             open_folder,
             read_folder_entries,
+            create_file,
+            create_folder,
+            move_entry,
+            delete_entry,
             open_stdin_document,
             render_markdown,
             render_source,

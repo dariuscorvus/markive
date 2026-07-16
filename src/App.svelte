@@ -6,8 +6,10 @@
     Eye,
     EyeOff,
     FilePlus,
+    FilePlus2,
     FileText,
     FolderOpen,
+    FolderPlus,
     Save,
     ChevronDown,
     ChevronUp,
@@ -27,7 +29,14 @@
   import Editor from "$lib/components/Editor.svelte";
   import Explorer from "$lib/components/Explorer.svelte";
   import TabBar from "$lib/components/TabBar.svelte";
-  import { MARKDOWN_EXTENSIONS, fileName, isMarkdownPath, type DocumentSource } from "$lib/document-state";
+  import {
+    MARKDOWN_EXTENSIONS,
+    fileName,
+    isMarkdownPath,
+    remapDocumentSource,
+    type DocumentSource,
+  } from "$lib/document-state";
+  import type { FolderEntry } from "$lib/folder-state";
   import {
     isTabDirty,
     moveTab,
@@ -408,6 +417,54 @@
 
   function closeFolder() {
     folderRoot = null;
+  }
+
+  let explorerRef = $state<{
+    createFile: () => Promise<void>;
+    createFolder: () => Promise<void>;
+  } | null>(null);
+
+  async function createFileAtRoot() {
+    errorMessage = null;
+    try {
+      await explorerRef?.createFile();
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  async function createFolderAtRoot() {
+    errorMessage = null;
+    try {
+      await explorerRef?.createFolder();
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  // A rename or move completed through the explorer: remap the path
+  // of every open tab affected — the renamed/moved file itself, or
+  // any file nested under a renamed/moved folder — without touching
+  // its content, scroll, or dirty state.
+  function handleEntryMoved(fromPath: string, toEntry: FolderEntry) {
+    for (const tab of tabs) {
+      const remapped = remapDocumentSource(tab.source, fromPath, toEntry.path);
+      if (remapped !== tab.source) tab.source = remapped;
+    }
+  }
+
+  // A delete completed through the explorer: flag any open tab on the
+  // deleted file (or nested under a deleted folder) as missing, the
+  // same banner an externally deleted file already shows — the
+  // buffer stays in the tab, only the disk copy is gone.
+  function handleEntryDeleted(path: string) {
+    for (const tab of tabs) {
+      if (tab.source.kind !== "file") continue;
+      if (tab.source.path === path || tab.source.path.startsWith(`${path}/`)) {
+        tab.conflict = "missing";
+        tab.savedText = null;
+      }
+    }
   }
 
   // Keep the backend watcher pointed at the active tab's file.
@@ -1208,6 +1265,17 @@
           <p class="truncate text-xs text-muted-foreground" title={folderRoot}>{folderRoot}</p>
         </div>
         <div class="flex shrink-0 items-center gap-0.5">
+          <Button variant="ghost" size="icon-sm" aria-label="New file" onclick={() => void createFileAtRoot()}>
+            <FilePlus2 aria-hidden="true" class="size-3.5" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label="New folder"
+            onclick={() => void createFolderAtRoot()}
+          >
+            <FolderPlus aria-hidden="true" class="size-3.5" />
+          </Button>
           <Button
             variant="ghost"
             size="icon-sm"
@@ -1227,11 +1295,15 @@
         </div>
       </div>
       <Explorer
+        bind:this={explorerRef}
         rootPath={folderRoot}
         showHidden={showHiddenFiles}
         activePath={activeTab?.source.kind === "file" ? activeTab.source.path : null}
         isActiveDirty={isDirty}
         onOpenFile={openFileFromExplorer}
+        onEntryMoved={handleEntryMoved}
+        onEntryDeleted={handleEntryDeleted}
+        onError={(message) => (errorMessage = message)}
       />
     </aside>
   {/if}

@@ -23,6 +23,23 @@ export function isMarkdownPath(path: string): boolean {
   return MARKDOWN_EXTENSIONS.includes(extension);
 }
 
+// After a file or folder rename or move, remaps a document source's
+// path if it was the renamed item itself or nested under a renamed
+// folder. Returns the same source unchanged otherwise — including
+// for pathless sources, which nothing on disk can affect.
+export function remapDocumentSource(
+  source: DocumentSource,
+  fromPath: string,
+  toPath: string,
+): DocumentSource {
+  if (source.kind !== "file") return source;
+  if (source.path === fromPath) return { kind: "file", path: toPath };
+  if (source.path.startsWith(`${fromPath}/`)) {
+    return { kind: "file", path: toPath + source.path.slice(fromPath.length) };
+  }
+  return source;
+}
+
 // Documents without a saved form (clipboard, stdin, untitled) are
 // dirty once they hold text; an empty untitled document is clean so
 // an unused window closes without a prompt. `savedText` is the

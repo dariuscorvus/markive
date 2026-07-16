@@ -13,7 +13,7 @@ A native macOS Markdown viewer and editor. Open a `.md` from Finder and it rende
 
 - **Viewer first.** Rendered, Source, and Split views (⌘1/⌘2/⌘3). GitHub-style heading anchors, tables, task lists, fenced code. Local images and relative links resolve — including images written as raw HTML, the way READMEs do it.
 - **Editor when you need it.** CodeMirror with Markdown highlighting, multi-cursor (⌘-click), undo history, live re-render in Split mode.
-- **Folder explorer.** Open a folder as a root and browse it in a sidebar — lazy tree, Markdown-focused (folders and `.md` files only), hidden files toggle, unsaved-changes indicator, and safe against symlink loops.
+- **Folder explorer.** Open a folder as a root and browse it in a sidebar — lazy tree, Markdown-focused (folders and `.md` files only), hidden files toggle, unsaved-changes indicator, and safe against symlink loops. Create, rename, and drag-and-drop-move files and folders from the sidebar; delete goes to the system trash. Open tabs follow along when their file is renamed or moved.
 - **Tabs.** Open several documents at once, each keeping its own content, path, view mode, selection, and dirty state. Reorder by dragging, close individually, and picking an already-open file focuses its tab instead of duplicating it.
 - **Safe by default.** Rendered HTML is sanitized; the webview never navigates. External links open in your browser, local `.md` links open in Markive, everything else is blocked. Saves are atomic — a failed write leaves the original untouched.
 - **Lossless quit.** ⌘Q never nags. The session — window, document, view mode, scroll, and unsaved edits — restores on the next launch, like TextEdit.

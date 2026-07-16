@@ -1,6 +1,13 @@
 import { describe, expect, test } from "vitest";
 
-import { isHiddenEntry, isSymlinkCycle, visibleEntries, type FolderEntry } from "./folder-state";
+import {
+  destinationPath,
+  isHiddenEntry,
+  isSameOrDescendant,
+  isSymlinkCycle,
+  visibleEntries,
+  type FolderEntry,
+} from "./folder-state";
 
 function entry(name: string, overrides: Partial<FolderEntry> = {}): FolderEntry {
   return { name, path: `/root/${name}`, isDir: false, isSymlink: false, ...overrides };
@@ -42,5 +49,29 @@ describe("isSymlinkCycle", () => {
 
   test("an empty ancestor chain has no cycle", () => {
     expect(isSymlinkCycle("/root", [])).toBe(false);
+  });
+});
+
+describe("isSameOrDescendant", () => {
+  test("a path equal to the ancestor is itself", () => {
+    expect(isSameOrDescendant("/root/a", "/root/a")).toBe(true);
+  });
+
+  test("a path nested under the ancestor is a descendant", () => {
+    expect(isSameOrDescendant("/root/a/b/c.md", "/root/a")).toBe(true);
+  });
+
+  test("an unrelated path is not", () => {
+    expect(isSameOrDescendant("/root/b", "/root/a")).toBe(false);
+  });
+
+  test("a sibling whose name is a string prefix is not a false positive", () => {
+    expect(isSameOrDescendant("/root/a-extra/c.md", "/root/a")).toBe(false);
+  });
+});
+
+describe("destinationPath", () => {
+  test("joins the target directory and entry name", () => {
+    expect(destinationPath("/root/sub", "note.md")).toBe("/root/sub/note.md");
   });
 });
