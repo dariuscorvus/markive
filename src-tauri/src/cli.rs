@@ -11,7 +11,7 @@ pub const HELP: &str = "\
 Markive — Markdown viewer
 
 Usage:
-  markive [path]           Open a Markdown file in the app
+  markive [path]           Open a Markdown file or folder in the app
   markive -                Open piped stdin in the app
                            (piped stdin is also detected without the -)
   markive render [path]    Render Markdown to sanitized HTML on stdout
@@ -158,6 +158,37 @@ pub fn validate_document_path(path: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Validates a folder path and makes it absolute so it stays correct
+/// across process boundaries — the detach re-exec and single-instance
+/// forwarding both run with a different working directory.
+///
+/// # Errors
+///
+/// Returns a message suitable for stderr when the path is missing, not
+/// a directory, or cannot be resolved.
+pub fn absolute_folder_path(path: &str) -> Result<String, String> {
+    validate_folder_path(path)?;
+
+    std::fs::canonicalize(path)
+        .map(|absolute| absolute.to_string_lossy().into_owned())
+        .map_err(|error| format!("Unable to resolve {path}: {error}"))
+}
+
+/// Checks that `path` names an existing directory before the GUI
+/// starts. A `.obsidian` directory inside it does not change this —
+/// Markive treats every folder the same way.
+///
+/// # Errors
+///
+/// Returns a message suitable for stderr when the path is missing or
+/// not a directory.
+pub fn validate_folder_path(path: &str) -> Result<(), String> {
+    if !Path::new(path).is_dir() {
+        return Err(format!("{path} is not a folder"));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -233,6 +264,41 @@ mod tests {
     #[test]
     fn unknown_options_are_rejected() {
         assert!(parse(&args(&["--watch"])).is_err());
+    }
+
+    #[test]
+    fn validates_an_existing_folder() {
+        let dir = std::env::temp_dir().join(format!("markive-folder-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create test folder");
+
+        assert!(validate_folder_path(dir.to_str().expect("utf8 path")).is_ok());
+
+        std::fs::remove_dir_all(&dir).expect("remove test folder");
+    }
+
+    #[test]
+    fn a_dot_obsidian_directory_does_not_change_folder_open_behavior() {
+        let dir = std::env::temp_dir().join(format!("markive-vault-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join(".obsidian")).expect("create test vault");
+
+        assert!(validate_folder_path(dir.to_str().expect("utf8 path")).is_ok());
+
+        std::fs::remove_dir_all(&dir).expect("remove test vault");
+    }
+
+    #[test]
+    fn rejects_a_file_as_a_folder() {
+        let file = std::env::temp_dir().join(format!("markive-not-a-folder-{}.md", std::process::id()));
+        std::fs::write(&file, "# hi\n").expect("write test file");
+
+        assert!(validate_folder_path(file.to_str().expect("utf8 path")).is_err());
+
+        std::fs::remove_file(&file).expect("remove test file");
+    }
+
+    #[test]
+    fn rejects_a_missing_folder() {
+        assert!(validate_folder_path("/nonexistent/markive-missing-folder").is_err());
     }
 
     #[test]

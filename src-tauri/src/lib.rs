@@ -10,16 +10,20 @@ pub enum Launch {
     Window,
     /// A validated, absolute document path.
     Document(String),
+    /// A validated, absolute folder path, opened as a filesystem root.
+    Folder(String),
     /// A temporary file holding piped stdin, deleted after reading.
     StdinFile(String),
 }
 
-/// A document open request delivered to the frontend: at startup through
-/// the `launch_document` command, afterwards as an `open-document` event.
+/// A document or folder open request delivered to the frontend: at
+/// startup through the `launch_document` command, afterwards as an
+/// `open-document` event.
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct OpenRequest {
     path: Option<String>,
+    folder_path: Option<String>,
     stdin_path: Option<String>,
     error: Option<String>,
 }
@@ -30,11 +34,19 @@ impl OpenRequest {
             Launch::Window => None,
             Launch::Document(path) => Some(Self {
                 path: Some(path),
+                folder_path: None,
+                stdin_path: None,
+                error: None,
+            }),
+            Launch::Folder(path) => Some(Self {
+                path: None,
+                folder_path: Some(path),
                 stdin_path: None,
                 error: None,
             }),
             Launch::StdinFile(file) => Some(Self {
                 path: None,
+                folder_path: None,
                 stdin_path: Some(file),
                 error: None,
             }),
@@ -48,22 +60,49 @@ impl OpenRequest {
         match args {
             [flag, file] if flag == "--stdin-file" => Some(Self {
                 path: None,
+                folder_path: None,
                 stdin_path: Some(file.clone()),
                 error: None,
             }),
-            [path] => Some(match cli::validate_document_path(path) {
-                Ok(()) => Self {
-                    path: Some(path.clone()),
-                    stdin_path: None,
-                    error: None,
-                },
-                Err(error) => Self {
-                    path: None,
-                    stdin_path: None,
-                    error: Some(error),
-                },
-            }),
+            [path] => Some(request_for_path(path)),
             _ => None,
+        }
+    }
+}
+
+/// Decides whether `path` names a Markdown document or a folder root,
+/// then validates it into an open request. Shared by single-instance
+/// argument forwarding and macOS open-file events.
+fn request_for_path(path: &str) -> OpenRequest {
+    if std::path::Path::new(path).is_dir() {
+        match cli::validate_folder_path(path) {
+            Ok(()) => OpenRequest {
+                path: None,
+                folder_path: Some(path.to_string()),
+                stdin_path: None,
+                error: None,
+            },
+            Err(error) => OpenRequest {
+                path: None,
+                folder_path: None,
+                stdin_path: None,
+                error: Some(error),
+            },
+        }
+    } else {
+        match cli::validate_document_path(path) {
+            Ok(()) => OpenRequest {
+                path: Some(path.to_string()),
+                folder_path: None,
+                stdin_path: None,
+                error: None,
+            },
+            Err(error) => OpenRequest {
+                path: None,
+                folder_path: None,
+                stdin_path: None,
+                error: Some(error),
+            },
         }
     }
 }
@@ -83,16 +122,29 @@ fn launch_document(state: tauri::State<'_, Mutex<LaunchState>>) -> Option<OpenRe
     state.pending.take()
 }
 
-/// Converts a URL from a macOS open-file event into a validated
-/// Markdown document path.
+/// Converts a URL from a macOS open-file event into a filesystem path,
+/// without judging whether it names a file or a folder.
 #[cfg(target_os = "macos")]
-fn document_path_from_url(url: &tauri::Url) -> Result<String, String> {
-    let path = url
-        .to_file_path()
-        .map_err(|()| format!("{url} is not a file path"))?;
-    let path = path.to_string_lossy().into_owned();
-    cli::validate_document_path(&path)?;
-    Ok(path)
+fn file_url_to_path(url: &tauri::Url) -> Result<String, String> {
+    url.to_file_path()
+        .map(|path| path.to_string_lossy().into_owned())
+        .map_err(|()| format!("{url} is not a file path"))
+}
+
+/// Converts a URL from a macOS open-file event into an open request,
+/// routing it to the document or folder branch depending on what it
+/// names on disk.
+#[cfg(target_os = "macos")]
+fn open_request_from_url(url: &tauri::Url) -> OpenRequest {
+    match file_url_to_path(url) {
+        Ok(path) => request_for_path(&path),
+        Err(error) => OpenRequest {
+            path: None,
+            folder_path: None,
+            stdin_path: None,
+            error: Some(error),
+        },
+    }
 }
 
 /// Hands an open request to the frontend, or stores it for the startup
@@ -154,6 +206,22 @@ async fn open_document(app: tauri::AppHandle, path: String) -> Result<OpenedDocu
         html: rendered.html().to_owned(),
         content: document.content().to_owned(),
     })
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OpenedFolder {
+    path: String,
+}
+
+/// Opens a folder as a filesystem root: validates it exists and
+/// resolves it to an absolute path. Markive writes nothing inside
+/// it — the root only ever lives in memory and in the session file
+/// under the app's own data directory.
+#[tauri::command]
+async fn open_folder(path: String) -> Result<OpenedFolder, String> {
+    let absolute = cli::absolute_folder_path(&path)?;
+    Ok(OpenedFolder { path: absolute })
 }
 
 #[tauri::command]
@@ -474,6 +542,9 @@ fn build_menu(app: &tauri::App) -> tauri::Result<MenuHandles> {
     let open = MenuItemBuilder::with_id("open", "Open…")
         .accelerator("CmdOrCtrl+O")
         .build(app)?;
+    let open_folder = MenuItemBuilder::with_id("open-folder", "Open Folder…")
+        .accelerator("Shift+CmdOrCtrl+O")
+        .build(app)?;
     let save = MenuItemBuilder::with_id("save", "Save")
         .accelerator("CmdOrCtrl+S")
         .enabled(false)
@@ -519,6 +590,7 @@ fn build_menu(app: &tauri::App) -> tauri::Result<MenuHandles> {
     let file_menu = SubmenuBuilder::new(app, "File")
         .item(&new_item)
         .item(&open)
+        .item(&open_folder)
         .separator()
         .item(&save)
         .item(&save_as)
@@ -696,18 +768,39 @@ mod tests {
     }
 
     #[test]
-    fn file_url_to_markdown_path() {
+    fn file_url_converts_to_a_document_open_request() {
         let path = std::env::temp_dir().join(format!("markive-open-{}.md", std::process::id()));
         std::fs::write(&path, "# Opened\n").expect("write test document");
 
         let url = tauri::Url::from_file_path(&path).expect("build file URL");
-        let converted = document_path_from_url(&url).expect("convert URL");
+        let request = open_request_from_url(&url);
+
         assert_eq!(
-            std::fs::canonicalize(&converted).expect("canonicalize converted path"),
+            std::fs::canonicalize(request.path.expect("document path")).expect("canonicalize"),
             std::fs::canonicalize(&path).expect("canonicalize test path"),
         );
+        assert!(request.folder_path.is_none());
+        assert!(request.error.is_none());
 
         std::fs::remove_file(&path).expect("remove test document");
+    }
+
+    #[test]
+    fn folder_url_converts_to_a_folder_open_request() {
+        let dir = std::env::temp_dir().join(format!("markive-open-folder-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create test folder");
+
+        let url = tauri::Url::from_file_path(&dir).expect("build file URL");
+        let request = open_request_from_url(&url);
+
+        assert_eq!(
+            std::fs::canonicalize(request.folder_path.expect("folder path")).expect("canonicalize"),
+            std::fs::canonicalize(&dir).expect("canonicalize test path"),
+        );
+        assert!(request.path.is_none());
+        assert!(request.error.is_none());
+
+        std::fs::remove_dir_all(&dir).expect("remove test folder");
     }
 
     #[test]
@@ -716,7 +809,7 @@ mod tests {
         std::fs::write(&path, "plain text\n").expect("write test document");
 
         let url = tauri::Url::from_file_path(&path).expect("build file URL");
-        let error = document_path_from_url(&url).expect_err("reject non-Markdown file");
+        let error = open_request_from_url(&url).error.expect("reject non-Markdown file");
         assert!(error.contains("not a Markdown file"), "unexpected error: {error}");
 
         std::fs::remove_file(&path).expect("remove test document");
@@ -726,13 +819,13 @@ mod tests {
     fn missing_file_url_is_rejected() {
         let url = tauri::Url::from_file_path("/nonexistent/markive-missing.md")
             .expect("build file URL");
-        assert!(document_path_from_url(&url).is_err());
+        assert!(open_request_from_url(&url).error.is_some());
     }
 
     #[test]
     fn non_file_url_is_rejected() {
         let url: tauri::Url = "https://example.com/notes.md".parse().expect("parse URL");
-        let error = document_path_from_url(&url).expect_err("reject non-file URL");
+        let error = open_request_from_url(&url).error.expect("reject non-file URL");
         assert!(error.contains("not a file path"), "unexpected error: {error}");
     }
 }
@@ -808,6 +901,7 @@ pub fn run(launch: Launch) {
             if matches!(
                 id,
                 "new" | "open"
+                    | "open-folder"
                     | "undo"
                     | "redo"
                     | "save"
@@ -833,6 +927,7 @@ pub fn run(launch: Launch) {
         .manage(LastGeometry(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![
             open_document,
+            open_folder,
             open_stdin_document,
             render_markdown,
             render_source,
@@ -863,19 +958,7 @@ pub fn run(launch: Launch) {
         #[cfg(target_os = "macos")]
         if let tauri::RunEvent::Opened { urls } = &event {
             for url in urls {
-                let request = match document_path_from_url(url) {
-                    Ok(path) => OpenRequest {
-                        path: Some(path),
-                        stdin_path: None,
-                        error: None,
-                    },
-                    Err(error) => OpenRequest {
-                        path: None,
-                        stdin_path: None,
-                        error: Some(error),
-                    },
-                };
-                deliver_open_request(app, request);
+                deliver_open_request(app, open_request_from_url(url));
             }
         }
 

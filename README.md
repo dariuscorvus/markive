@@ -7,7 +7,7 @@
 > macOS opens PDFs in Preview.
 > Markdown deserves the same: double-click, read, done.
 
-A native macOS Markdown viewer and editor. Open a `.md` from Finder and it renders. Hit ⌘2 and it's an editor. No project folders, no workspace, no Electron.
+A native macOS Markdown viewer and editor. Open a `.md` from Finder and it renders. Hit ⌘2 and it's an editor. Open a folder and it becomes a root — no project setup, no workspace file, no Electron.
 
 ## What it is
 
@@ -46,19 +46,20 @@ Settings (⌘,) → **Install Command Line Tool** puts `markive` on your PATH. T
 
 ```
 markive notes.md              # open a file in the app
+markive notes/                # open a folder as a root
 markive -                     # read a document from stdin
 markive render notes.md       # print sanitized HTML to stdout
 echo '# hi' | markive render  # works in pipes
 markive --version
 ```
 
-`render` is a plain Unix filter — no window, no daemon, exits when done. Opening a file hands off to the running instance and returns.
+`render` is a plain Unix filter — no window, no daemon, exits when done. Opening a file or folder hands off to the running instance and returns.
 
 ## Keyboard
 
 | | |
 |---|---|
-| ⌘O / ⌘N / ⌘S / ⇧⌘S | Open, New, Save, Save As |
+| ⌘O / ⇧⌘O / ⌘N / ⌘S / ⇧⌘S | Open, Open Folder, New, Save, Save As |
 | ⌘1 / ⌘2 / ⌘3 | Rendered, Source, Split |
 | ⌘E | Cycle view mode |
 | ⌘F, ⌘G / ⇧⌘G | Find, next / previous match |

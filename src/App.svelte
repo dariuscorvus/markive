@@ -43,9 +43,17 @@
     content: string;
   };
 
-  type OpenRequest = { path: string | null; stdinPath: string | null; error: string | null };
+  type OpenRequest = {
+    path: string | null;
+    folderPath: string | null;
+    stdinPath: string | null;
+    error: string | null;
+  };
 
   let documentSource = $state<DocumentSource | null>(null);
+  // The open folder root — mutually exclusive with documentSource until
+  // an explorer exists to show what's inside it.
+  let folderRoot = $state<string | null>(null);
   let renderedHtml = $state("");
   let sourceText = $state("");
   // Content as last loaded or saved; null for documents that never
@@ -170,7 +178,7 @@
       case "untitled":
         return "Untitled";
       default:
-        return "Markive";
+        return folderRoot ? (folderRoot.split(/[\\/]/).pop() ?? "Markive") : "Markive";
     }
   });
   let sourceLabel = $derived.by(() => {
@@ -184,7 +192,7 @@
       case "untitled":
         return "Untitled";
       default:
-        return "No file open";
+        return folderRoot ?? "No file open";
     }
   });
 
@@ -321,12 +329,30 @@
   async function openDocumentAtPath(path: string, preserveView = false) {
     const document = await invoke<OpenedDocument>("open_document", { path });
 
+    folderRoot = null;
     documentSource = { kind: "file", path: document.path };
     renderedHtml = convertLocalImageSources(document.html);
     sourceText = document.content;
     savedText = document.content;
     fileConflict = null;
     if (!preserveView) viewMode = "rendered";
+  }
+
+  // Opening a folder replaces any open document — there is no explorer
+  // yet (#22), so the two states are mutually exclusive for now.
+  async function openFolderAtPath(path: string) {
+    const opened = await invoke<{ path: string }>("open_folder", { path });
+
+    documentSource = null;
+    sourceText = "";
+    savedText = null;
+    renderedHtml = "";
+    fileConflict = null;
+    folderRoot = opened.path;
+  }
+
+  function closeFolder() {
+    folderRoot = null;
   }
 
   // Keep the backend watcher pointed at the current file. Pathless
@@ -380,6 +406,7 @@
   async function newDocument() {
     if (!(await canDiscardDocument())) return;
 
+    folderRoot = null;
     documentSource = { kind: "untitled" };
     fileConflict = null;
     sourceText = "";
@@ -494,6 +521,30 @@
     }
   }
 
+  async function openFolder() {
+    if (isOpening) return;
+    if (!(await canDiscardDocument())) return;
+
+    isOpening = true;
+    errorMessage = null;
+
+    try {
+      const selectedPath = await open({
+        title: "Open Folder",
+        multiple: false,
+        directory: true,
+      });
+
+      if (!selectedPath) return;
+
+      await openFolderAtPath(selectedPath);
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : String(error);
+    } finally {
+      isOpening = false;
+    }
+  }
+
   async function pasteClipboard() {
     if (isPasting) return;
     if (!(await canDiscardDocument())) return;
@@ -533,6 +584,7 @@
         baseDir: null,
       });
 
+      folderRoot = null;
       fileConflict = null;
       documentSource = { kind: "clipboard" };
       renderedHtml = convertLocalImageSources(html);
@@ -557,10 +609,13 @@
         // the temp dir is cleaned up by the OS.
       } else if (request.path) {
         await openDocumentAtPath(request.path);
+      } else if (request.folderPath) {
+        await openFolderAtPath(request.folderPath);
       } else if (request.stdinPath) {
         const stdinDocument = await invoke<StdinDocument>("open_stdin_document", {
           path: request.stdinPath,
         });
+        folderRoot = null;
         fileConflict = null;
         documentSource = { kind: "stdin" };
         renderedHtml = convertLocalImageSources(stdinDocument.html);
@@ -620,7 +675,8 @@
   // scroll positions. Quit (cmd+Q) is deliberately unguarded (#9), so
   // unsaved edits must survive through here to make quitting lossless.
   type Session = {
-    source: DocumentSource;
+    source: DocumentSource | null;
+    folderRoot: string | null;
     viewMode: typeof viewMode;
     sourceText: string;
     savedText: string | null;
@@ -641,6 +697,7 @@
       const session = documentSource
         ? ({
             source: documentSource,
+            folderRoot: null,
             viewMode,
             sourceText,
             savedText,
@@ -649,17 +706,26 @@
               source: editorRef?.getScrollTop() ?? 0,
             },
           } satisfies Session)
-        : null;
+        : folderRoot
+          ? ({
+              source: null,
+              folderRoot,
+              viewMode,
+              sourceText: "",
+              savedText: null,
+              scroll: { rendered: 0, source: 0 },
+            } satisfies Session)
+          : null;
       void invoke("save_session", { session }).catch(() => {
         // A session that fails to save costs one restore, nothing more.
       });
     }, 300);
   }
 
-  // Document, edits, and view mode changes schedule a save; scroll is
-  // captured by the window listener below.
+  // Document, folder, edits, and view mode changes schedule a save;
+  // scroll is captured by the window listener below.
   $effect(() => {
-    void [documentSource, sourceText, savedText, viewMode];
+    void [documentSource, folderRoot, sourceText, savedText, viewMode];
     scheduleSessionSave();
   });
 
@@ -673,7 +739,20 @@
 
   async function restoreSession() {
     const session = await invoke<Session | null>("load_session");
-    if (!session?.source) return;
+    if (!session) return;
+
+    if (!session.source) {
+      if (!session.folderRoot) return;
+
+      try {
+        await openFolderAtPath(session.folderRoot);
+      } catch {
+        // The folder is gone or unreadable: fall back to the empty
+        // state.
+        folderRoot = null;
+      }
+      return;
+    }
 
     try {
       if (session.source.kind === "file") {
@@ -807,6 +886,9 @@
         break;
       case "open":
         void openFile();
+        break;
+      case "open-folder":
+        void openFolder();
         break;
       case "undo":
         editorRef?.undoEdit();
@@ -1209,6 +1291,26 @@
         </article>
       </section>
     {/if}
+  {:else if folderRoot}
+    <section class="grid place-items-center px-6">
+      <div class="max-w-sm text-center">
+        <p class="font-mono text-xs tracking-wide text-muted-foreground">MARKIVE</p>
+        <h1 class="mt-4 text-balance text-2xl font-medium tracking-tight">{documentName}</h1>
+        <p class="mt-2 break-all text-pretty text-sm leading-6 text-muted-foreground">
+          {folderRoot}
+        </p>
+        <div class="mt-6 flex justify-center gap-2">
+          <Button variant="outline" size="lg" onclick={closeFolder}>Close Folder</Button>
+          <Button size="lg" onclick={openFile} disabled={isOpening}>
+            <FolderOpen data-icon="inline-start" aria-hidden="true" />
+            {isOpening ? "Opening…" : "Open file"}
+          </Button>
+        </div>
+        {#if errorMessage}
+          <p class="mt-4 text-sm text-destructive" role="alert">{errorMessage}</p>
+        {/if}
+      </div>
+    </section>
   {:else}
     <section class="grid place-items-center px-6">
       <div class="max-w-sm text-center">
@@ -1219,7 +1321,7 @@
         <p class="mt-2 text-pretty text-sm leading-6 text-muted-foreground">
           Open a file from disk, or paste Markdown without creating one.
         </p>
-        <div class="mt-6 flex justify-center gap-2">
+        <div class="mt-6 flex flex-wrap justify-center gap-2">
           <Button variant="outline" size="lg" onclick={() => void newDocument()}>
             <FilePlus data-icon="inline-start" aria-hidden="true" />
             New
@@ -1227,6 +1329,10 @@
           <Button size="lg" onclick={openFile} disabled={isOpening}>
             <FolderOpen data-icon="inline-start" aria-hidden="true" />
             {isOpening ? "Opening…" : "Open file"}
+          </Button>
+          <Button variant="outline" size="lg" onclick={openFolder} disabled={isOpening}>
+            <FolderOpen data-icon="inline-start" aria-hidden="true" />
+            Open folder
           </Button>
           <Button variant="outline" size="lg" onclick={pasteClipboard} disabled={isPasting}>
             <ClipboardPaste data-icon="inline-start" aria-hidden="true" />
