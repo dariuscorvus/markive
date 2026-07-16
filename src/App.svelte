@@ -4,6 +4,7 @@
     Code,
     Columns2,
     Eye,
+    EyeOff,
     FilePlus,
     FileText,
     FolderOpen,
@@ -24,6 +25,7 @@
 
   import { Button } from "$lib/components/ui/button";
   import Editor from "$lib/components/Editor.svelte";
+  import Explorer from "$lib/components/Explorer.svelte";
   import {
     MARKDOWN_EXTENSIONS,
     fileName,
@@ -51,9 +53,14 @@
   };
 
   let documentSource = $state<DocumentSource | null>(null);
-  // The open folder root — mutually exclusive with documentSource until
-  // an explorer exists to show what's inside it.
+  // The open folder root. Independent of documentSource — the
+  // explorer stays visible no matter which document (if any) is open,
+  // and opening a document never closes it.
   let folderRoot = $state<string | null>(null);
+  let showHiddenFiles = $state(localStorage.getItem("markive-show-hidden-files") === "true");
+  $effect(() => {
+    localStorage.setItem("markive-show-hidden-files", String(showHiddenFiles));
+  });
   let renderedHtml = $state("");
   let sourceText = $state("");
   // Content as last loaded or saved; null for documents that never
@@ -329,7 +336,6 @@
   async function openDocumentAtPath(path: string, preserveView = false) {
     const document = await invoke<OpenedDocument>("open_document", { path });
 
-    folderRoot = null;
     documentSource = { kind: "file", path: document.path };
     renderedHtml = convertLocalImageSources(document.html);
     sourceText = document.content;
@@ -338,17 +344,26 @@
     if (!preserveView) viewMode = "rendered";
   }
 
-  // Opening a folder replaces any open document — there is no explorer
-  // yet (#22), so the two states are mutually exclusive for now.
+  // Opening a folder leaves any open document in place — the folder
+  // root and the current document are independent; the explorer just
+  // gives you another way to pick what to open next.
   async function openFolderAtPath(path: string) {
     const opened = await invoke<{ path: string }>("open_folder", { path });
-
-    documentSource = null;
-    sourceText = "";
-    savedText = null;
-    renderedHtml = "";
-    fileConflict = null;
     folderRoot = opened.path;
+  }
+
+  // Opens a file selected in the explorer, guarding unsaved changes
+  // in whatever document is currently open — the same rule every
+  // other open path follows.
+  async function openFileFromExplorer(path: string) {
+    if (!(await canDiscardDocument())) return;
+
+    errorMessage = null;
+    try {
+      await openDocumentAtPath(path);
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : String(error);
+    }
   }
 
   function closeFolder() {
@@ -406,7 +421,6 @@
   async function newDocument() {
     if (!(await canDiscardDocument())) return;
 
-    folderRoot = null;
     documentSource = { kind: "untitled" };
     fileConflict = null;
     sourceText = "";
@@ -584,7 +598,6 @@
         baseDir: null,
       });
 
-      folderRoot = null;
       fileConflict = null;
       documentSource = { kind: "clipboard" };
       renderedHtml = convertLocalImageSources(html);
@@ -615,7 +628,6 @@
         const stdinDocument = await invoke<StdinDocument>("open_stdin_document", {
           path: request.stdinPath,
         });
-        folderRoot = null;
         fileConflict = null;
         documentSource = { kind: "stdin" };
         renderedHtml = convertLocalImageSources(stdinDocument.html);
@@ -694,26 +706,18 @@
 
     clearTimeout(sessionTimer);
     sessionTimer = setTimeout(() => {
-      const session = documentSource
-        ? ({
-            source: documentSource,
-            folderRoot: null,
-            viewMode,
-            sourceText,
-            savedText,
-            scroll: {
-              rendered: renderedScrollEl?.scrollTop ?? 0,
-              source: editorRef?.getScrollTop() ?? 0,
-            },
-          } satisfies Session)
-        : folderRoot
+      const session =
+        documentSource || folderRoot
           ? ({
-              source: null,
+              source: documentSource,
               folderRoot,
               viewMode,
-              sourceText: "",
-              savedText: null,
-              scroll: { rendered: 0, source: 0 },
+              sourceText: documentSource ? sourceText : "",
+              savedText: documentSource ? savedText : null,
+              scroll: {
+                rendered: renderedScrollEl?.scrollTop ?? 0,
+                source: editorRef?.getScrollTop() ?? 0,
+              },
             } satisfies Session)
           : null;
       void invoke("save_session", { session }).catch(() => {
@@ -741,9 +745,7 @@
     const session = await invoke<Session | null>("load_session");
     if (!session) return;
 
-    if (!session.source) {
-      if (!session.folderRoot) return;
-
+    if (session.folderRoot) {
       try {
         await openFolderAtPath(session.folderRoot);
       } catch {
@@ -751,8 +753,9 @@
         // state.
         folderRoot = null;
       }
-      return;
     }
+
+    if (!session.source) return;
 
     try {
       if (session.source.kind === "file") {
@@ -1069,9 +1072,47 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
-<main
-  class={`grid min-h-screen grid-rows-[2.75rem_auto_auto_1fr] bg-background text-foreground ${isDragOver ? "ring-2 ring-inset ring-ring" : ""}`}
->
+<div class="flex min-h-screen bg-background text-foreground">
+  {#if folderRoot}
+    <aside class="flex w-64 shrink-0 flex-col border-r border-border">
+      <div class="flex items-center justify-between gap-2 border-b border-border px-2 py-2">
+        <div class="min-w-0">
+          <p class="truncate text-sm font-medium" title={folderRoot}>
+            {folderRoot.split(/[\\/]/).pop() ?? folderRoot}
+          </p>
+          <p class="truncate text-xs text-muted-foreground" title={folderRoot}>{folderRoot}</p>
+        </div>
+        <div class="flex shrink-0 items-center gap-0.5">
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label={showHiddenFiles ? "Hide hidden files" : "Show hidden files"}
+            aria-pressed={showHiddenFiles}
+            onclick={() => (showHiddenFiles = !showHiddenFiles)}
+          >
+            {#if showHiddenFiles}
+              <EyeOff aria-hidden="true" class="size-3.5" />
+            {:else}
+              <Eye aria-hidden="true" class="size-3.5" />
+            {/if}
+          </Button>
+          <Button variant="ghost" size="icon" aria-label="Close folder" onclick={closeFolder}>
+            <X aria-hidden="true" class="size-3.5" />
+          </Button>
+        </div>
+      </div>
+      <Explorer
+        rootPath={folderRoot}
+        showHidden={showHiddenFiles}
+        activePath={documentSource?.kind === "file" ? documentSource.path : null}
+        isActiveDirty={isDirty}
+        onOpenFile={openFileFromExplorer}
+      />
+    </aside>
+  {/if}
+  <main
+    class={`grid min-w-0 flex-1 grid-rows-[2.75rem_auto_auto_1fr] ${isDragOver ? "ring-2 ring-inset ring-ring" : ""}`}
+  >
   <header class="path-rail flex items-center justify-between gap-4 border-b border-border px-4">
     <div class="flex min-w-0 items-center gap-2 font-mono text-xs text-muted-foreground">
       <FileText aria-hidden="true" class="size-3.5 shrink-0" strokeWidth={1.75} />
@@ -1295,12 +1336,15 @@
     <section class="grid place-items-center px-6">
       <div class="max-w-sm text-center">
         <p class="font-mono text-xs tracking-wide text-muted-foreground">MARKIVE</p>
-        <h1 class="mt-4 text-balance text-2xl font-medium tracking-tight">{documentName}</h1>
-        <p class="mt-2 break-all text-pretty text-sm leading-6 text-muted-foreground">
-          {folderRoot}
+        <h1 class="mt-4 text-balance text-2xl font-medium tracking-tight">Pick a file to open.</h1>
+        <p class="mt-2 text-pretty text-sm leading-6 text-muted-foreground">
+          Select a Markdown file in the sidebar, or open one from disk.
         </p>
         <div class="mt-6 flex justify-center gap-2">
-          <Button variant="outline" size="lg" onclick={closeFolder}>Close Folder</Button>
+          <Button variant="outline" size="lg" onclick={() => void newDocument()}>
+            <FilePlus data-icon="inline-start" aria-hidden="true" />
+            New
+          </Button>
           <Button size="lg" onclick={openFile} disabled={isOpening}>
             <FolderOpen data-icon="inline-start" aria-hidden="true" />
             {isOpening ? "Opening…" : "Open file"}
@@ -1345,7 +1389,8 @@
       </div>
     </section>
   {/if}
-</main>
+  </main>
+</div>
 
 {#if confirmResolve}
   <div

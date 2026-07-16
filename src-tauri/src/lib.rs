@@ -224,6 +224,192 @@ async fn open_folder(path: String) -> Result<OpenedFolder, String> {
     Ok(OpenedFolder { path: absolute })
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FolderEntry {
+    name: String,
+    path: String,
+    is_dir: bool,
+    is_symlink: bool,
+}
+
+/// Lists one directory level: every subfolder plus every Markdown
+/// file, sorted folders-first then case-insensitively by name.
+///
+/// Hidden entries (dotfiles) are included — the frontend decides
+/// whether to display them, so toggling that setting never needs a
+/// re-read. Non-Markdown files are dropped entirely; the explorer
+/// only ever shows folders and documents it can open.
+///
+/// Each entry's `path` is canonicalized, including through symlinks,
+/// so a symlinked folder resolves to its real target. The caller
+/// compares that canonical path against the chain of folders already
+/// expanded above it to detect a symlink cycle before ever
+/// expanding into it — this function only ever reads one level and
+/// never recurses, so it cannot loop on its own.
+///
+/// An entry that fails to stat (a broken symlink, a permission
+/// error on that one entry) is skipped rather than failing the
+/// whole listing.
+///
+/// # Errors
+///
+/// Returns a message suitable for display when `path` itself cannot
+/// be read (missing, not a directory, no permission).
+fn list_folder_entries(path: &std::path::Path) -> Result<Vec<FolderEntry>, String> {
+    let read_dir = std::fs::read_dir(path)
+        .map_err(|error| format!("Unable to read {}: {error}", path.display()))?;
+
+    let mut entries = Vec::new();
+    for entry in read_dir.flatten() {
+        let entry_path = entry.path();
+
+        let Ok(metadata) = std::fs::metadata(&entry_path) else {
+            continue;
+        };
+        let is_dir = metadata.is_dir();
+        if !is_dir && !markive_core::is_markdown_path(&entry_path) {
+            continue;
+        }
+
+        let is_symlink = std::fs::symlink_metadata(&entry_path)
+            .is_ok_and(|metadata| metadata.file_type().is_symlink());
+        let Ok(canonical) = std::fs::canonicalize(&entry_path) else {
+            continue;
+        };
+
+        entries.push(FolderEntry {
+            name: entry.file_name().to_string_lossy().into_owned(),
+            path: canonical.to_string_lossy().into_owned(),
+            is_dir,
+            is_symlink,
+        });
+    }
+
+    entries.sort_by(|a, b| {
+        b.is_dir
+            .cmp(&a.is_dir)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+    Ok(entries)
+}
+
+#[tauri::command]
+async fn read_folder_entries(path: String) -> Result<Vec<FolderEntry>, String> {
+    list_folder_entries(std::path::Path::new(&path))
+}
+
+#[cfg(test)]
+mod folder_entry_tests {
+    use super::list_folder_entries;
+
+    struct TestDir(std::path::PathBuf);
+
+    impl TestDir {
+        fn new(name: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("{name}-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).expect("create test dir");
+            Self(dir)
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn lists_folders_and_markdown_files_only() {
+        let dir = TestDir::new("markive-list-filter");
+        std::fs::create_dir(dir.0.join("subfolder")).expect("create subfolder");
+        std::fs::write(dir.0.join("notes.md"), "# hi").expect("write markdown");
+        std::fs::write(dir.0.join("image.png"), "not markdown").expect("write image");
+
+        let entries = list_folder_entries(&dir.0).expect("list entries");
+        let names: Vec<&str> = entries.iter().map(|entry| entry.name.as_str()).collect();
+
+        assert!(names.contains(&"subfolder"));
+        assert!(names.contains(&"notes.md"));
+        assert!(!names.contains(&"image.png"));
+    }
+
+    #[test]
+    fn includes_hidden_entries() {
+        let dir = TestDir::new("markive-list-hidden");
+        std::fs::create_dir(dir.0.join(".obsidian")).expect("create dotdir");
+        std::fs::write(dir.0.join(".hidden.md"), "# hi").expect("write hidden markdown");
+
+        let entries = list_folder_entries(&dir.0).expect("list entries");
+        let names: Vec<&str> = entries.iter().map(|entry| entry.name.as_str()).collect();
+
+        assert!(names.contains(&".obsidian"));
+        assert!(names.contains(&".hidden.md"));
+    }
+
+    #[test]
+    fn sorts_folders_before_files_case_insensitively() {
+        let dir = TestDir::new("markive-list-sort");
+        std::fs::create_dir(dir.0.join("Zeta")).expect("create folder");
+        std::fs::write(dir.0.join("apple.md"), "# a").expect("write a");
+        std::fs::write(dir.0.join("Banana.md"), "# b").expect("write b");
+
+        let entries = list_folder_entries(&dir.0).expect("list entries");
+        let names: Vec<&str> = entries.iter().map(|entry| entry.name.as_str()).collect();
+
+        assert_eq!(names, ["Zeta", "apple.md", "Banana.md"]);
+    }
+
+    #[test]
+    fn flags_symlinks_and_resolves_their_canonical_target() {
+        let dir = TestDir::new("markive-list-symlink");
+        let target = dir.0.join("real-folder");
+        std::fs::create_dir(&target).expect("create target");
+        let link = dir.0.join("link-folder");
+        std::os::unix::fs::symlink(&target, &link).expect("create symlink");
+
+        let entries = list_folder_entries(&dir.0).expect("list entries");
+        let linked = entries
+            .iter()
+            .find(|entry| entry.name == "link-folder")
+            .expect("find symlinked entry");
+
+        assert!(linked.is_symlink);
+        assert!(linked.is_dir);
+        assert_eq!(
+            std::path::Path::new(&linked.path),
+            std::fs::canonicalize(&target).expect("canonicalize target"),
+        );
+    }
+
+    #[test]
+    fn a_symlink_pointing_at_an_ancestor_resolves_to_that_ancestors_path() {
+        // The cycle guard itself lives in the frontend (it already holds
+        // the ancestor chain); this only proves the backend gives it the
+        // canonical path it needs to detect one — a symlink back to `dir`
+        // must resolve to `dir`'s own canonical path.
+        let dir = TestDir::new("markive-list-loop");
+        let link = dir.0.join("loop-to-self");
+        std::os::unix::fs::symlink(&dir.0, &link).expect("create symlink");
+
+        let entries = list_folder_entries(&dir.0).expect("list entries");
+        let looped = entries
+            .iter()
+            .find(|entry| entry.name == "loop-to-self")
+            .expect("find looping entry");
+
+        assert_eq!(
+            std::path::Path::new(&looped.path),
+            std::fs::canonicalize(&dir.0).expect("canonicalize root"),
+        );
+    }
+
+    #[test]
+    fn missing_folder_is_reported() {
+        assert!(list_folder_entries(std::path::Path::new("/nonexistent/markive-folder")).is_err());
+    }
+}
+
 #[tauri::command]
 fn render_markdown(markdown: &str) -> String {
     markive_core::render_markdown(markdown)
@@ -928,6 +1114,7 @@ pub fn run(launch: Launch) {
         .invoke_handler(tauri::generate_handler![
             open_document,
             open_folder,
+            read_folder_entries,
             open_stdin_document,
             render_markdown,
             render_source,
