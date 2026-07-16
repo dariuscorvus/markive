@@ -28,6 +28,7 @@
   import { Button } from "$lib/components/ui/button";
   import Editor from "$lib/components/Editor.svelte";
   import Explorer from "$lib/components/Explorer.svelte";
+  import QuickOpen from "$lib/components/QuickOpen.svelte";
   import TabBar from "$lib/components/TabBar.svelte";
   import {
     MARKDOWN_EXTENSIONS,
@@ -76,6 +77,21 @@
   $effect(() => {
     localStorage.setItem("markive-show-hidden-files", String(showHiddenFiles));
   });
+  let quickOpenOpen = $state(false);
+
+  function openQuickOpen() {
+    if (folderRoot) quickOpenOpen = true;
+  }
+
+  async function openFileFromQuickOpen(path: string) {
+    quickOpenOpen = false;
+    errorMessage = null;
+    try {
+      await openPathInTab(path);
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : String(error);
+    }
+  }
 
   // Appearance: an explicit choice, or the macOS appearance (default).
   type ThemePreference = "light" | "dark" | "system";
@@ -1065,6 +1081,9 @@
       case "open-folder":
         void openFolder();
         break;
+      case "quick-open":
+        openQuickOpen();
+        break;
       case "undo":
         editorRef?.undoEdit();
         break;
@@ -1123,6 +1142,7 @@
   $effect(() => {
     void invoke("set_menu_state", {
       hasDocument: activeTab !== undefined,
+      hasFolder: folderRoot !== null,
       viewMode: activeTab?.viewMode ?? "rendered",
       theme: themePreference,
     }).catch(() => {
@@ -1565,6 +1585,15 @@
   {/if}
   </main>
 </div>
+
+{#if quickOpenOpen && folderRoot}
+  <QuickOpen
+    rootPath={folderRoot}
+    includeHidden={showHiddenFiles}
+    onOpenFile={openFileFromQuickOpen}
+    onClose={() => (quickOpenOpen = false)}
+  />
+{/if}
 
 {#if confirmResolve}
   <div

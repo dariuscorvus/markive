@@ -302,6 +302,98 @@ async fn read_folder_entries(path: String) -> Result<Vec<FolderEntry>, String> {
     list_folder_entries(std::path::Path::new(&path))
 }
 
+/// One file found while walking a folder root for Quick Open.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct QuickOpenEntry {
+    name: String,
+    path: String,
+    relative_path: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct QuickOpenResults {
+    entries: Vec<QuickOpenEntry>,
+    // True when the walk hit MAX_QUICK_OPEN_ENTRIES and stopped early
+    // rather than enumerating the whole tree.
+    truncated: bool,
+}
+
+const MAX_QUICK_OPEN_ENTRIES: usize = 20_000;
+
+/// Walks every file under `root` for Quick Open — every file, not just
+/// Markdown, since ranking Markdown above everything else only means
+/// something if non-Markdown files are in the results too.
+///
+/// Directories are canonicalized as they're queued and tracked in
+/// `visited`, so a symlink cycle is visited once and then skipped
+/// rather than walked forever; files are joined onto their already-
+/// canonical parent directory instead of canonicalized individually,
+/// which avoids a syscall per file on a large tree. Stops (rather
+/// than erroring) at `MAX_QUICK_OPEN_ENTRIES` files and reports
+/// `truncated` so a pathological tree (a whole home directory,
+/// `node_modules`) can't hang the search — the walk itself runs off
+/// the UI thread regardless, through Tauri's async command dispatch.
+fn walk_files_for_quick_open(root: &std::path::Path, include_hidden: bool) -> QuickOpenResults {
+    let Ok(root_canonical) = std::fs::canonicalize(root) else {
+        return QuickOpenResults { entries: Vec::new(), truncated: false };
+    };
+
+    let mut entries = Vec::new();
+    let mut visited = std::collections::HashSet::new();
+    let mut stack = vec![root_canonical.clone()];
+    let mut truncated = false;
+
+    'walk: while let Some(dir) = stack.pop() {
+        if !visited.insert(dir.clone()) {
+            continue;
+        }
+        let Ok(read_dir) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+
+        for entry in read_dir.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !include_hidden && name.starts_with('.') {
+                continue;
+            }
+
+            let Ok(metadata) = std::fs::metadata(entry.path()) else {
+                continue;
+            };
+
+            if metadata.is_dir() {
+                let Ok(canonical_dir) = std::fs::canonicalize(entry.path()) else {
+                    continue;
+                };
+                stack.push(canonical_dir);
+                continue;
+            }
+
+            if entries.len() >= MAX_QUICK_OPEN_ENTRIES {
+                truncated = true;
+                break 'walk;
+            }
+
+            let path = dir.join(&name);
+            let relative_path = path
+                .strip_prefix(&root_canonical)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .into_owned();
+            entries.push(QuickOpenEntry { name, path: path.to_string_lossy().into_owned(), relative_path });
+        }
+    }
+
+    QuickOpenResults { entries, truncated }
+}
+
+#[tauri::command]
+async fn list_all_files(root: String, include_hidden: bool) -> Result<QuickOpenResults, String> {
+    Ok(walk_files_for_quick_open(std::path::Path::new(&root), include_hidden))
+}
+
 /// Appends `.md` when `name` has no recognized Markdown extension, so
 /// a file created through the explorer always shows up in it — the
 /// listing filters to Markdown files only.
@@ -674,6 +766,106 @@ mod file_ops_tests {
     }
 }
 
+#[cfg(test)]
+mod quick_open_tests {
+    use super::walk_files_for_quick_open;
+
+    struct TestDir(std::path::PathBuf);
+
+    impl TestDir {
+        fn new(name: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("{name}-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).expect("create test dir");
+            Self(dir)
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn walks_nested_folders() {
+        let dir = TestDir::new("markive-quickopen-nested");
+        std::fs::create_dir_all(dir.0.join("a/b")).expect("create nested dirs");
+        std::fs::write(dir.0.join("root.md"), "").expect("write root file");
+        std::fs::write(dir.0.join("a/mid.md"), "").expect("write mid file");
+        std::fs::write(dir.0.join("a/b/deep.md"), "").expect("write deep file");
+
+        let results = walk_files_for_quick_open(&dir.0, false);
+
+        let mut names: Vec<&str> = results.entries.iter().map(|e| e.name.as_str()).collect();
+        names.sort_unstable();
+        assert_eq!(names, ["deep.md", "mid.md", "root.md"]);
+        assert!(!results.truncated);
+    }
+
+    #[test]
+    fn reports_paths_relative_to_the_root() {
+        let dir = TestDir::new("markive-quickopen-relative");
+        std::fs::create_dir(dir.0.join("notes")).expect("create dir");
+        std::fs::write(dir.0.join("notes/a.md"), "").expect("write file");
+
+        let results = walk_files_for_quick_open(&dir.0, false);
+
+        assert_eq!(results.entries.len(), 1);
+        assert_eq!(results.entries[0].relative_path, "notes/a.md");
+    }
+
+    #[test]
+    fn includes_every_file_type_not_just_markdown() {
+        let dir = TestDir::new("markive-quickopen-all-types");
+        std::fs::write(dir.0.join("notes.md"), "").expect("write markdown");
+        std::fs::write(dir.0.join("image.png"), "").expect("write image");
+        std::fs::write(dir.0.join("data.json"), "").expect("write json");
+
+        let results = walk_files_for_quick_open(&dir.0, false);
+
+        let mut names: Vec<&str> = results.entries.iter().map(|e| e.name.as_str()).collect();
+        names.sort_unstable();
+        assert_eq!(names, ["data.json", "image.png", "notes.md"]);
+    }
+
+    #[test]
+    fn excludes_hidden_files_and_folders_unless_requested() {
+        let dir = TestDir::new("markive-quickopen-hidden");
+        std::fs::write(dir.0.join(".hidden.md"), "").expect("write hidden file");
+        std::fs::create_dir(dir.0.join(".hidden-dir")).expect("create hidden dir");
+        std::fs::write(dir.0.join(".hidden-dir/inside.md"), "").expect("write nested hidden file");
+        std::fs::write(dir.0.join("visible.md"), "").expect("write visible file");
+
+        let hidden_excluded = walk_files_for_quick_open(&dir.0, false);
+        let names: Vec<&str> = hidden_excluded.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["visible.md"]);
+
+        let hidden_included = walk_files_for_quick_open(&dir.0, true);
+        let mut names: Vec<&str> = hidden_included.entries.iter().map(|e| e.name.as_str()).collect();
+        names.sort_unstable();
+        assert_eq!(names, [".hidden.md", "inside.md", "visible.md"]);
+    }
+
+    #[test]
+    fn a_symlink_loop_does_not_hang_the_walk() {
+        let dir = TestDir::new("markive-quickopen-loop");
+        std::fs::write(dir.0.join("root.md"), "").expect("write root file");
+        std::os::unix::fs::symlink(&dir.0, dir.0.join("loop")).expect("create symlink loop");
+
+        let results = walk_files_for_quick_open(&dir.0, false);
+
+        let names: Vec<&str> = results.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["root.md"]);
+    }
+
+    #[test]
+    fn a_missing_root_returns_no_entries() {
+        let results = walk_files_for_quick_open(std::path::Path::new("/nonexistent/markive-quickopen"), false);
+        assert!(results.entries.is_empty());
+        assert!(!results.truncated);
+    }
+}
+
 #[tauri::command]
 fn render_markdown(markdown: &str) -> String {
     markive_core::render_markdown(markdown)
@@ -937,6 +1129,7 @@ struct MenuHandles {
     save_as: tauri::menu::MenuItem<tauri::Wry>,
     find: tauri::menu::MenuItem<tauri::Wry>,
     close_tab: tauri::menu::MenuItem<tauri::Wry>,
+    quick_open: tauri::menu::MenuItem<tauri::Wry>,
     rendered: tauri::menu::CheckMenuItem<tauri::Wry>,
     source: tauri::menu::CheckMenuItem<tauri::Wry>,
     split: tauri::menu::CheckMenuItem<tauri::Wry>,
@@ -952,6 +1145,7 @@ struct MenuHandles {
 fn set_menu_state(
     handles: tauri::State<'_, MenuHandles>,
     has_document: bool,
+    has_folder: bool,
     view_mode: String,
     theme: String,
 ) -> Result<(), String> {
@@ -960,6 +1154,7 @@ fn set_menu_state(
         handles.save_as.set_enabled(has_document)?;
         handles.find.set_enabled(has_document)?;
         handles.close_tab.set_enabled(has_document)?;
+        handles.quick_open.set_enabled(has_folder)?;
 
         for (item, mode) in [
             (&handles.rendered, "rendered"),
@@ -996,6 +1191,10 @@ fn build_menu(app: &tauri::App) -> tauri::Result<MenuHandles> {
         .build(app)?;
     let open_folder = MenuItemBuilder::with_id("open-folder", "Open Folder…")
         .accelerator("Shift+CmdOrCtrl+O")
+        .build(app)?;
+    let quick_open = MenuItemBuilder::with_id("quick-open", "Quick Open…")
+        .accelerator("CmdOrCtrl+P")
+        .enabled(false)
         .build(app)?;
     let save = MenuItemBuilder::with_id("save", "Save")
         .accelerator("CmdOrCtrl+S")
@@ -1053,6 +1252,7 @@ fn build_menu(app: &tauri::App) -> tauri::Result<MenuHandles> {
         .item(&new_item)
         .item(&open)
         .item(&open_folder)
+        .item(&quick_open)
         .separator()
         .item(&save)
         .item(&save_as)
@@ -1117,6 +1317,7 @@ fn build_menu(app: &tauri::App) -> tauri::Result<MenuHandles> {
         save_as,
         find,
         close_tab,
+        quick_open,
         rendered,
         source,
         split,
@@ -1366,6 +1567,7 @@ pub fn run(launch: Launch) {
                 id,
                 "new" | "open"
                     | "open-folder"
+                    | "quick-open"
                     | "undo"
                     | "redo"
                     | "save"
@@ -1395,6 +1597,7 @@ pub fn run(launch: Launch) {
             open_document,
             open_folder,
             read_folder_entries,
+            list_all_files,
             create_file,
             create_folder,
             move_entry,
