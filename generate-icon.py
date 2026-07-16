@@ -25,6 +25,21 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SVG_PATH = os.path.join(HERE, "markive-icon.svg")
 
 
+def full_bleed(svg_text):
+    """Squares off the icon for the OS icon set.
+
+    macOS 26 composites app icons onto a system-drawn rounded
+    rectangle; art with baked-in rounded corners shows the backing
+    plate as white corners. The OS applies its own mask, so the icns
+    gets full-bleed art: the canvas rects lose their radius and the
+    rounded outline stroke goes away.
+    """
+    svg_text = svg_text.replace(
+        '<rect width="1024" height="1024" rx="224"', '<rect width="1024" height="1024"'
+    )
+    return re.sub(r'<rect x="4" y="4"[^>]*rx="220"[^>]*></rect>', "", svg_text)
+
+
 def _render_on(svg_text, bg_hex, size, out_dir, tag):
     """Render the SVG via QuickLook onto an opaque `bg_hex` background."""
     variant = re.sub(
@@ -74,7 +89,7 @@ def main():
     if not os.path.exists(SVG_PATH):
         raise SystemExit(f"Missing vector master: {SVG_PATH}")
 
-    svg_text = open(SVG_PATH).read()
+    svg_text = full_bleed(open(SVG_PATH).read())
     with tempfile.TemporaryDirectory() as tmp:
         master = rasterize_rgba(svg_text, 1024, tmp)
         if master.size != (1024, 1024):
