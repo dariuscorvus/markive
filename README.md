@@ -81,6 +81,8 @@ npm test                 # frontend logic
 npm run tauri dev
 ```
 
+MIT — see [LICENSE](LICENSE).
+
 ---
 
 [darius.codes](https://darius.codes)
