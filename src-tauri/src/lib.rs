@@ -1965,6 +1965,12 @@ mod tests {
 /// false`) to attach the navigation policy: the webview may only load
 /// the app itself. External links open in the default browser; a click
 /// that slips past the frontend interception must not replace the app.
+///
+/// Built hidden, then shown only after `restore_window_geometry` has
+/// applied the previous session's size and position. Resizing an
+/// already-visible window right after creation can leave the webview
+/// sized to the config default while the native window moves to the
+/// restored geometry, showing a gap of native background.
 fn setup_app(app: &tauri::App) -> tauri::Result<()> {
     use tauri::Manager;
 
@@ -1976,6 +1982,7 @@ fn setup_app(app: &tauri::App) -> tauri::Result<()> {
         .expect("main window config missing")
         .clone();
     let window = tauri::WebviewWindowBuilder::from_config(app, &config)?
+        .visible(false)
         .on_navigation(|url| match url.scheme() {
             "tauri" => true,
             "http" | "https" if cfg!(debug_assertions) => {
@@ -1985,6 +1992,7 @@ fn setup_app(app: &tauri::App) -> tauri::Result<()> {
         })
         .build()?;
     restore_window_geometry(app.handle(), &window);
+    let _ = window.show();
     // An untouched window never fires a move or resize, so the initial
     // geometry is recorded here.
     record_window_geometry(app.handle());
