@@ -23,6 +23,11 @@ jobs:
     runs-on: macos-latest
     permissions:
       contents: write
+    # The secrets context is not available in step `if` conditions;
+    # these flags carry the presence check instead.
+    env:
+      HAS_SIGNING_CREDENTIALS: ${{ secrets.APPLE_CERTIFICATE != '' }}
+      HAS_NOTARY_CREDENTIALS: ${{ secrets.APPLE_ID != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -49,15 +54,31 @@ jobs:
             exit 1
           }
 
+      # The APPLE_* variables are exported only when the secrets hold
+      # values: Tauri treats a set-but-empty APPLE_CERTIFICATE as
+      # credentials and fails importing the empty certificate.
+      - name: Enable signing when credentials are configured
+        if: env.HAS_SIGNING_CREDENTIALS == 'true'
+        run: |
+          {
+            echo "APPLE_CERTIFICATE<<MARKIVE_EOF"
+            echo "${{ secrets.APPLE_CERTIFICATE }}"
+            echo "MARKIVE_EOF"
+            echo "APPLE_CERTIFICATE_PASSWORD=${{ secrets.APPLE_CERTIFICATE_PASSWORD }}"
+            echo "APPLE_SIGNING_IDENTITY=${{ secrets.APPLE_SIGNING_IDENTITY }}"
+          } >> "$GITHUB_ENV"
+
+      - name: Enable notarization when credentials are configured
+        if: env.HAS_NOTARY_CREDENTIALS == 'true'
+        run: |
+          {
+            echo "APPLE_ID=${{ secrets.APPLE_ID }}"
+            echo "APPLE_PASSWORD=${{ secrets.APPLE_PASSWORD }}"
+            echo "APPLE_TEAM_ID=${{ secrets.APPLE_TEAM_ID }}"
+          } >> "$GITHUB_ENV"
+
       - name: Build universal bundle
         run: npm run tauri build -- --target universal-apple-darwin
-        env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
       - name: Verify both architectures
         run: |
@@ -65,8 +86,15 @@ jobs:
 
       - name: Create release with the DMG
         run: |
+          if [ "$HAS_SIGNING_CREDENTIALS" = "true" ] && [ "$HAS_NOTARY_CREDENTIALS" = "true" ]; then
+            install_note=.github/release-notes/install-signed.md
+          else
+            install_note=.github/release-notes/install-unsigned.md
+          fi
+
           gh release create "${GITHUB_REF_NAME}" \
             --title "Markive ${GITHUB_REF_NAME}" \
+            --notes "$(cat "$install_note")" \
             --generate-notes \
             target/universal-apple-darwin/release/bundle/dmg/*.dmg
         env:
