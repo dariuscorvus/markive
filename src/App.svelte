@@ -28,6 +28,7 @@
   import { Button } from "$lib/components/ui/button";
   import Editor from "$lib/components/Editor.svelte";
   import Explorer from "$lib/components/Explorer.svelte";
+  import FavoritesSidebar from "$lib/components/FavoritesSidebar.svelte";
   import QuickOpen from "$lib/components/QuickOpen.svelte";
   import SearchPanel from "$lib/components/SearchPanel.svelte";
   import TabBar from "$lib/components/TabBar.svelte";
@@ -38,6 +39,7 @@
     remapDocumentSource,
     type DocumentSource,
   } from "$lib/document-state";
+  import { removeFavorite, upsertFavorite, type FavoriteEntry } from "$lib/favorites-state";
   import type { FolderEntry } from "$lib/folder-state";
   import {
     isTabDirty,
@@ -78,6 +80,18 @@
   $effect(() => {
     localStorage.setItem("markive-show-hidden-files", String(showHiddenFiles));
   });
+
+  // Favorites sidebar visibility is a UI preference, not document or
+  // favorites data — it doesn't belong in session.json or
+  // favorites.json, so it's stored the same way showHiddenFiles is.
+  let favorites = $state<FavoriteEntry[]>([]);
+  let favoritesReady = $state(false);
+  let failedFavoritePath = $state<string | null>(null);
+  let showFavorites = $state(localStorage.getItem("markive-show-favorites") === "true");
+  $effect(() => {
+    localStorage.setItem("markive-show-favorites", String(showFavorites));
+  });
+
   let quickOpenOpen = $state(false);
 
   function openQuickOpen() {
@@ -461,6 +475,20 @@
     }
   }
 
+  // Distinct from openFileFromExplorer so a failure can offer a
+  // "Remove favorite" action — that affordance makes no sense for the
+  // plain folder Explorer's open-failure path.
+  async function openFavoriteFile(path: string) {
+    errorMessage = null;
+    failedFavoritePath = null;
+    try {
+      await openPathInTab(path);
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : String(error);
+      failedFavoritePath = path;
+    }
+  }
+
   function closeFolder() {
     folderRoot = null;
   }
@@ -723,6 +751,27 @@
     }
   }
 
+  function addActiveDocumentToFavorites() {
+    if (activeTab?.source.kind !== "file") return;
+    favorites = upsertFavorite(favorites, activeTab.source.path, "file", Date.now());
+  }
+
+  async function addFolderToFavorites() {
+    try {
+      const selectedPath = await open({
+        title: "Add Folder to Favorites",
+        multiple: false,
+        directory: true,
+      });
+
+      if (!selectedPath) return;
+
+      favorites = upsertFavorite(favorites, selectedPath, "directory", Date.now());
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : String(error);
+    }
+  }
+
   async function pasteClipboard() {
     if (isPasting) return;
 
@@ -910,6 +959,42 @@
   $effect(() => {
     void [tabs, folderRoot];
     scheduleSessionSave();
+  });
+
+  // Favorites persist to their own favorites.json, independent of the
+  // session — they don't touch tabs or folderRoot, so there's no
+  // ordering dependency on restoreSession(). Saving is gated the same
+  // way session saves are: loading sets favoritesReady only once the
+  // load resolves, so a save never fires before it.
+  let favoritesTimer: ReturnType<typeof setTimeout> | undefined;
+
+  function scheduleFavoritesSave() {
+    if (!favoritesReady) return;
+
+    clearTimeout(favoritesTimer);
+    favoritesTimer = setTimeout(() => {
+      void invoke("save_favorites", { favorites }).catch(() => {
+        // Favorites that fail to save cost one restore, nothing more.
+      });
+    }, 300);
+  }
+
+  $effect(() => {
+    void favorites;
+    scheduleFavoritesSave();
+  });
+
+  onMount(() => {
+    void (async () => {
+      try {
+        const loaded = await invoke<FavoriteEntry[] | null>("load_favorites");
+        if (loaded) favorites = loaded;
+      } catch {
+        // Start empty.
+      } finally {
+        favoritesReady = true;
+      }
+    })();
   });
 
   // Scroll events do not bubble but are observable in the capture
@@ -1159,6 +1244,15 @@
       case "settings":
         settingsOpen = true;
         break;
+      case "add-to-favorites":
+        addActiveDocumentToFavorites();
+        break;
+      case "add-folder-to-favorites":
+        void addFolderToFavorites();
+        break;
+      case "show-favorites":
+        showFavorites = !showFavorites;
+        break;
     }
   }
 
@@ -1176,8 +1270,10 @@
     void invoke("set_menu_state", {
       hasDocument: activeTab !== undefined,
       hasFolder: folderRoot !== null,
+      hasFileDocument: activeTab?.source.kind === "file",
       viewMode: activeTab?.viewMode ?? "rendered",
       theme: themePreference,
+      showFavorites,
     }).catch(() => {
       // A menu that lags the document state is not worth surfacing.
     });
@@ -1308,6 +1404,14 @@
 <svelte:window onkeydown={handleKeydown} />
 
 <div class="flex min-h-screen bg-background text-foreground">
+  {#if showFavorites}
+    <FavoritesSidebar
+      {favorites}
+      onOpenFile={openFavoriteFile}
+      onRemove={(path) => (favorites = removeFavorite(favorites, path))}
+      onClose={() => (showFavorites = false)}
+    />
+  {/if}
   {#if folderRoot}
     <aside class="flex w-64 shrink-0 flex-col border-r border-border">
       <div class="flex items-center justify-between gap-2 border-b border-border px-2 py-2">
@@ -1520,8 +1624,24 @@
       aria-label={`${activeTab.viewMode === "split" ? "Split view" : activeTab.viewMode === "source" ? "Source" : "Rendered"} of ${documentName}`}
     >
       {#if errorMessage}
-        <p class="border-b border-border px-8 py-2 text-sm text-destructive" role="alert">
-          {errorMessage}
+        <p
+          class="flex items-center justify-between gap-4 border-b border-border px-8 py-2 text-sm text-destructive"
+          role="alert"
+        >
+          <span class="min-w-0 truncate">{errorMessage}</span>
+          {#if failedFavoritePath}
+            <Button
+              variant="outline"
+              size="sm"
+              onclick={() => {
+                favorites = removeFavorite(favorites, failedFavoritePath!);
+                errorMessage = null;
+                failedFavoritePath = null;
+              }}
+            >
+              Remove favorite
+            </Button>
+          {/if}
         </p>
       {:else}
         <div></div>
@@ -1579,6 +1699,20 @@
         </div>
         {#if errorMessage}
           <p class="mt-4 text-sm text-destructive" role="alert">{errorMessage}</p>
+          {#if failedFavoritePath}
+            <Button
+              variant="outline"
+              size="sm"
+              class="mt-2"
+              onclick={() => {
+                favorites = removeFavorite(favorites, failedFavoritePath!);
+                errorMessage = null;
+                failedFavoritePath = null;
+              }}
+            >
+              Remove favorite
+            </Button>
+          {/if}
         {/if}
       </div>
     </section>
@@ -1612,6 +1746,20 @@
         </div>
         {#if errorMessage}
           <p class="mt-4 text-sm text-destructive" role="alert">{errorMessage}</p>
+          {#if failedFavoritePath}
+            <Button
+              variant="outline"
+              size="sm"
+              class="mt-2"
+              onclick={() => {
+                favorites = removeFavorite(favorites, failedFavoritePath!);
+                errorMessage = null;
+                failedFavoritePath = null;
+              }}
+            >
+              Remove favorite
+            </Button>
+          {/if}
         {/if}
       </div>
     </section>

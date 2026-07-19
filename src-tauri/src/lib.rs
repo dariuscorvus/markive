@@ -1577,6 +1577,25 @@ fn save_session(app: tauri::AppHandle, session: serde_json::Value) -> Result<(),
         .map_err(|error| format!("Unable to save the session: {error}"))
 }
 
+/// Returns the saved favorites list, if any. The schema is owned by
+/// the frontend; the backend only stores it.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn load_favorites(app: tauri::AppHandle) -> Option<serde_json::Value> {
+    let dir = session_dir(&app)?;
+    let json = std::fs::read_to_string(dir.join("favorites.json")).ok()?;
+    serde_json::from_str(&json).ok()
+}
+
+/// Persists the favorites list, saved debounced on every change.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn save_favorites(app: tauri::AppHandle, favorites: serde_json::Value) -> Result<(), String> {
+    let dir = session_dir(&app).ok_or("No application data directory")?;
+    std::fs::write(dir.join("favorites.json"), favorites.to_string())
+        .map_err(|error| format!("Unable to save favorites: {error}"))
+}
+
 /// Handles to the menu items whose enabled/checked state follows the
 /// document: Save, Save As, and Find need an open document; the View
 /// check items mirror the active view mode.
@@ -1587,24 +1606,28 @@ struct MenuHandles {
     find_in_files: tauri::menu::MenuItem<tauri::Wry>,
     close_tab: tauri::menu::MenuItem<tauri::Wry>,
     quick_open: tauri::menu::MenuItem<tauri::Wry>,
+    add_to_favorites: tauri::menu::MenuItem<tauri::Wry>,
     rendered: tauri::menu::CheckMenuItem<tauri::Wry>,
     source: tauri::menu::CheckMenuItem<tauri::Wry>,
     split: tauri::menu::CheckMenuItem<tauri::Wry>,
     theme_light: tauri::menu::CheckMenuItem<tauri::Wry>,
     theme_dark: tauri::menu::CheckMenuItem<tauri::Wry>,
     theme_system: tauri::menu::CheckMenuItem<tauri::Wry>,
+    show_favorites: tauri::menu::CheckMenuItem<tauri::Wry>,
 }
 
 /// Syncs menu item state with the frontend's document state. Called on
 /// every document or view-mode change.
 #[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
+#[allow(clippy::needless_pass_by_value, clippy::fn_params_excessive_bools)]
 fn set_menu_state(
     handles: tauri::State<'_, MenuHandles>,
     has_document: bool,
     has_folder: bool,
+    has_file_document: bool,
     view_mode: String,
     theme: String,
+    show_favorites: bool,
 ) -> Result<(), String> {
     let apply = || -> tauri::Result<()> {
         handles.save.set_enabled(has_document)?;
@@ -1613,6 +1636,10 @@ fn set_menu_state(
         handles.find_in_files.set_enabled(has_folder)?;
         handles.close_tab.set_enabled(has_document)?;
         handles.quick_open.set_enabled(has_folder)?;
+        // Distinct from has_document: a pathless tab (untitled,
+        // clipboard, stdin) has nothing to favorite.
+        handles.add_to_favorites.set_enabled(has_file_document)?;
+        handles.show_favorites.set_checked(show_favorites)?;
 
         for (item, mode) in [
             (&handles.rendered, "rendered"),
@@ -1692,6 +1719,14 @@ fn build_menu(app: &tauri::App) -> tauri::Result<MenuHandles> {
         .accelerator("CmdOrCtrl+3")
         .enabled(false)
         .build(app)?;
+    // No dynamic state needed for add-folder-to-favorites — like
+    // open-folder, it has nothing to enable/disable or check.
+    let add_to_favorites = MenuItemBuilder::with_id("add-to-favorites", "Add to Favorites")
+        .enabled(false)
+        .build(app)?;
+    let add_folder_to_favorites =
+        MenuItemBuilder::with_id("add-folder-to-favorites", "Add Folder to Favorites…").build(app)?;
+    let show_favorites = CheckMenuItemBuilder::with_id("show-favorites", "Show Favorites").build(app)?;
 
     let settings = MenuItemBuilder::with_id("settings", "Settings…")
         .accelerator("CmdOrCtrl+,")
@@ -1718,6 +1753,9 @@ fn build_menu(app: &tauri::App) -> tauri::Result<MenuHandles> {
         .separator()
         .item(&save)
         .item(&save_as)
+        .separator()
+        .item(&add_to_favorites)
+        .item(&add_folder_to_favorites)
         .separator()
         .item(&close_tab)
         .item(&close_window)
@@ -1757,6 +1795,8 @@ fn build_menu(app: &tauri::App) -> tauri::Result<MenuHandles> {
         .build()?;
 
     let view_menu = SubmenuBuilder::new(app, "View")
+        .item(&show_favorites)
+        .separator()
         .item(&rendered)
         .item(&source)
         .item(&split)
@@ -1782,12 +1822,14 @@ fn build_menu(app: &tauri::App) -> tauri::Result<MenuHandles> {
         find_in_files,
         close_tab,
         quick_open,
+        add_to_favorites,
         rendered,
         source,
         split,
         theme_light,
         theme_dark,
         theme_system,
+        show_favorites,
     })
 }
 
@@ -2055,6 +2097,9 @@ pub fn run(launch: Launch) {
                     | "theme-dark"
                     | "theme-system"
                     | "settings"
+                    | "add-to-favorites"
+                    | "add-folder-to-favorites"
+                    | "show-favorites"
             ) {
                 let _ = app.emit("menu-action", id);
             }
@@ -2088,6 +2133,8 @@ pub fn run(launch: Launch) {
             set_menu_state,
             load_session,
             save_session,
+            load_favorites,
+            save_favorites,
             install_cli
         ])
         .build(tauri::generate_context!())
