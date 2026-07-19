@@ -1,0 +1,101 @@
+# Private macOS release: a universal (Apple Silicon + Intel) bundle on
+# every version tag. Signing and notarization run only when the
+# APPLE_* secrets are configured — Tauri skips both when the
+# environment is empty, and the resulting unsigned app needs
+# `xattr -dr com.apple.quarantine` after download, same as any
+# unsigned bundle.
+#
+# Secrets for a signed release:
+#   APPLE_CERTIFICATE              base64 .p12 Developer ID certificate
+#   APPLE_CERTIFICATE_PASSWORD     its password
+#   APPLE_SIGNING_IDENTITY         e.g. "Developer ID Application: …"
+# Additionally, for notarization:
+#   APPLE_ID, APPLE_PASSWORD (app-specific), APPLE_TEAM_ID
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    # The secrets context is not available in step `if` conditions;
+    # these flags carry the presence check instead.
+    env:
+      HAS_SIGNING_CREDENTIALS: ${{ secrets.APPLE_CERTIFICATE != '' }}
+      HAS_NOTARY_CREDENTIALS: ${{ secrets.APPLE_ID != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - run: npm ci
+
+      - name: Check the tag matches the crate version
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')
+          test "v$version" = "${GITHUB_REF_NAME}" || {
+            echo "Tag ${GITHUB_REF_NAME} does not match crate version $version" >&2
+            exit 1
+          }
+
+      # The APPLE_* variables are exported only when the secrets hold
+      # values: Tauri treats a set-but-empty APPLE_CERTIFICATE as
+      # credentials and fails importing the empty certificate.
+      - name: Enable signing when credentials are configured
+        if: env.HAS_SIGNING_CREDENTIALS == 'true'
+        run: |
+          {
+            echo "APPLE_CERTIFICATE<<MARKIVE_EOF"
+            echo "${{ secrets.APPLE_CERTIFICATE }}"
+            echo "MARKIVE_EOF"
+            echo "APPLE_CERTIFICATE_PASSWORD=${{ secrets.APPLE_CERTIFICATE_PASSWORD }}"
+            echo "APPLE_SIGNING_IDENTITY=${{ secrets.APPLE_SIGNING_IDENTITY }}"
+          } >> "$GITHUB_ENV"
+
+      - name: Enable notarization when credentials are configured
+        if: env.HAS_NOTARY_CREDENTIALS == 'true'
+        run: |
+          {
+            echo "APPLE_ID=${{ secrets.APPLE_ID }}"
+            echo "APPLE_PASSWORD=${{ secrets.APPLE_PASSWORD }}"
+            echo "APPLE_TEAM_ID=${{ secrets.APPLE_TEAM_ID }}"
+          } >> "$GITHUB_ENV"
+
+      - name: Build universal bundle
+        run: npm run tauri build -- --target universal-apple-darwin
+
+      - name: Verify both architectures
+        run: |
+          lipo -archs "target/universal-apple-darwin/release/bundle/macos/Markive.app/Contents/MacOS/markive" | tee /dev/stderr | grep -q "x86_64 arm64"
+
+      - name: Create release with the DMG
+        run: |
+          if [ "$HAS_SIGNING_CREDENTIALS" = "true" ] && [ "$HAS_NOTARY_CREDENTIALS" = "true" ]; then
+            install_note=.github/release-notes/install-signed.md
+          else
+            install_note=.github/release-notes/install-unsigned.md
+          fi
+
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "Markive ${GITHUB_REF_NAME}" \
+            --notes "$(cat "$install_note")" \
+            --generate-notes \
+            target/universal-apple-darwin/release/bundle/dmg/*.dmg
+        env:
+          GH_TOKEN: ${{ github.token }}
