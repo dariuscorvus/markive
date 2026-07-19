@@ -86,8 +86,15 @@ jobs:
 
       - name: Create release with the DMG
         run: |
+          if [ "$HAS_SIGNING_CREDENTIALS" = "true" ] && [ "$HAS_NOTARY_CREDENTIALS" = "true" ]; then
+            install_note=.github/release-notes/install-signed.md
+          else
+            install_note=.github/release-notes/install-unsigned.md
+          fi
+
           gh release create "${GITHUB_REF_NAME}" \
             --title "Markive ${GITHUB_REF_NAME}" \
+            --notes "$(cat "$install_note")" \
             --generate-notes \
             target/universal-apple-darwin/release/bundle/dmg/*.dmg
         env:
