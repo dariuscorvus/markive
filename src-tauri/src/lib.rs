@@ -1479,6 +1479,146 @@ fn watch_document(
     Ok(())
 }
 
+/// The active folder-tree watcher; replaced when the folder root changes.
+struct FolderWatcher(Mutex<Option<notify::RecommendedWatcher>>);
+
+/// How long to wait for more signals before reporting a change. Collapses
+/// bursts (a `git checkout`, a sync client) into a single frontend refresh.
+const TREE_DEBOUNCE_WINDOW: std::time::Duration = std::time::Duration::from_millis(300);
+
+/// Waits for a signal, drains any more that arrive within `window` of the
+/// last one, then flushes once. Repeats until the sender is dropped. Kept
+/// free of `AppHandle`/filesystem concerns so it can be tested directly.
+fn coalesce_events(rx: &std::sync::mpsc::Receiver<()>, window: std::time::Duration, mut on_flush: impl FnMut()) {
+    while rx.recv().is_ok() {
+        while rx.recv_timeout(window).is_ok() {}
+        on_flush();
+    }
+}
+
+/// Watches everything under `path` for external changes, replacing any
+/// previous watch. `None` stops watching (folder closed). Events arrive in
+/// the frontend as `folder-tree-changed`, coalesced so a burst of filesystem
+/// activity triggers one refresh rather than one per touched file.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn watch_folder(
+    app: tauri::AppHandle,
+    watcher_state: tauri::State<'_, FolderWatcher>,
+    path: Option<String>,
+) -> Result<(), String> {
+    use notify::Watcher;
+
+    let mut guard = watcher_state.0.lock().expect("folder watcher lock poisoned");
+    *guard = None;
+
+    let Some(path) = path else { return Ok(()) };
+
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+
+    let flush_handle = app.clone();
+    std::thread::spawn(move || {
+        coalesce_events(&rx, TREE_DEBOUNCE_WINDOW, || {
+            use tauri::Emitter;
+            let _ = flush_handle.emit("folder-tree-changed", ());
+        });
+    });
+
+    let saves_handle = app.clone();
+    let mut watcher = notify::recommended_watcher(move |result: notify::Result<notify::Event>| {
+        use tauri::Manager;
+
+        let Ok(event) = result else { return };
+        if !matches!(
+            event.kind,
+            notify::EventKind::Modify(_) | notify::EventKind::Remove(_) | notify::EventKind::Create(_)
+        ) {
+            return;
+        }
+
+        let saves = saves_handle.state::<RecentSaves>();
+        let is_own_write = event
+            .paths
+            .iter()
+            .all(|changed| saves.is_own_save(&changed.to_string_lossy()));
+        if is_own_write {
+            return;
+        }
+
+        let _ = tx.send(());
+    })
+    .map_err(|error| format!("Unable to watch {path}: {error}"))?;
+
+    watcher
+        .watch(std::path::Path::new(&path), notify::RecursiveMode::Recursive)
+        .map_err(|error| format!("Unable to watch {path}: {error}"))?;
+    *guard = Some(watcher);
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod folder_watch_tests {
+    use super::coalesce_events;
+
+    struct TestDir(std::path::PathBuf);
+
+    impl TestDir {
+        fn new(name: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("{name}-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).expect("create test dir");
+            Self(dir)
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn a_burst_of_signals_collapses_into_one_flush() {
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let flushes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+        let flushes_for_thread = flushes.clone();
+        let handle = std::thread::spawn(move || {
+            coalesce_events(&rx, std::time::Duration::from_millis(30), || {
+                flushes_for_thread.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            });
+        });
+
+        for _ in 0..5 {
+            tx.send(()).expect("send signal");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert_eq!(flushes.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        tx.send(()).expect("send signal");
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert_eq!(flushes.load(std::sync::atomic::Ordering::SeqCst), 2);
+
+        drop(tx);
+        handle.join().expect("coalescing thread panicked");
+    }
+
+    #[test]
+    fn a_symlink_loop_does_not_hang_the_folder_watch() {
+        use notify::Watcher;
+
+        let dir = TestDir::new("markive-folder-watch-loop");
+        std::fs::write(dir.0.join("root.md"), "").expect("write root file");
+        std::os::unix::fs::symlink(&dir.0, dir.0.join("loop")).expect("create symlink loop");
+
+        let mut watcher = notify::recommended_watcher(|_: notify::Result<notify::Event>| {}).expect("create watcher");
+        let result = watcher.watch(&dir.0, notify::RecursiveMode::Recursive);
+
+        assert!(result.is_ok());
+    }
+}
+
 /// The directory holding lightweight session state, created on demand.
 /// Lives in the per-app data directory, never beside documents.
 fn session_dir(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
@@ -2050,6 +2190,7 @@ fn setup_app(app: &tauri::App) -> tauri::Result<()> {
 /// # Panics
 ///
 /// Panics when the Tauri runtime cannot initialize or exits with an error.
+#[allow(clippy::too_many_lines)]
 pub fn run(launch: Launch) {
     let app = tauri::Builder::default()
         // Registered first so a second instance forwards its arguments
@@ -2110,6 +2251,7 @@ pub fn run(launch: Launch) {
         }))
         .manage(RecentSaves(Mutex::new(std::collections::HashMap::new())))
         .manage(DocumentWatcher(Mutex::new(None)))
+        .manage(FolderWatcher(Mutex::new(None)))
         .manage(LastGeometry(Mutex::new(None)))
         .manage(SearchGeneration(std::sync::atomic::AtomicU64::new(0)))
         .invoke_handler(tauri::generate_handler![
@@ -2130,6 +2272,7 @@ pub fn run(launch: Launch) {
             launch_document,
             save_file,
             watch_document,
+            watch_folder,
             set_menu_state,
             load_session,
             save_session,

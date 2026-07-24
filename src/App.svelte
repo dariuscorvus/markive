@@ -552,6 +552,15 @@
     });
   });
 
+  // Keep the backend watcher pointed at the open folder root, so the
+  // Explorer can refresh when something outside the app adds, removes,
+  // or renames files under it.
+  $effect(() => {
+    void invoke("watch_folder", { path: folderRoot }).catch(() => {
+      // A folder that cannot be watched still works via manual refresh.
+    });
+  });
+
   /// Asks what to do with a tab's unsaved changes. Resolved by the modal.
   function confirmLoseChanges(): Promise<"save" | "discard" | "cancel"> {
     return new Promise((resolve) => {
