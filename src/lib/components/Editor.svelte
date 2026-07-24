@@ -14,6 +14,10 @@
   import { basicSetup } from "codemirror";
   import { onMount } from "svelte";
 
+  import { countWords } from "$lib/text-stats";
+
+  type EditorStats = { line: number; column: number; wordCount: number; charCount: number };
+
   let {
     tabId,
     value,
@@ -21,6 +25,7 @@
     fontSize = 14,
     lineWrap = true,
     onchange,
+    onstats,
   }: {
     tabId: string;
     value: string;
@@ -28,6 +33,7 @@
     fontSize?: number;
     lineWrap?: boolean;
     onchange: (value: string) => void;
+    onstats?: (stats: EditorStats) => void;
   } = $props();
 
   // Compartments swap settings in place, without resetting editor
@@ -42,6 +48,20 @@
 
   let container: HTMLDivElement;
   let view: EditorView | undefined;
+
+  function reportStats(state: EditorState) {
+    if (!onstats) return;
+
+    const pos = state.selection.main.head;
+    const line = state.doc.lineAt(pos);
+    const text = state.sliceDoc();
+    onstats({
+      line: line.number,
+      column: pos - line.from + 1,
+      wordCount: countWords(text),
+      charCount: text.length,
+    });
+  }
 
   // Each open tab keeps its own EditorState — content, selection, and
   // undo history together — so switching tabs feels like switching
@@ -72,6 +92,9 @@
           if (update.docChanged && !suppressChangeEvents) {
             onchange(update.state.sliceDoc());
           }
+          if (update.docChanged || update.selectionSet) {
+            reportStats(update.state);
+          }
         }),
         EditorView.theme({
           "&": { height: "100%" },
@@ -97,6 +120,7 @@
 
     currentTabId = id;
     view.focus();
+    reportStats(view.state);
   }
 
   /** Drops a closed tab's cached editor state. */
@@ -108,6 +132,7 @@
     view = new EditorView({ state: stateFor(value), parent: container });
     currentTabId = tabId;
     view.focus();
+    reportStats(view.state);
     return () => view?.destroy();
   });
 
@@ -137,6 +162,7 @@
       view.setState(stateFor(value));
       suppressChangeEvents = false;
       view.focus();
+      reportStats(view.state);
     }
   });
 

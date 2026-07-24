@@ -1754,12 +1754,17 @@ struct MenuHandles {
     theme_dark: tauri::menu::CheckMenuItem<tauri::Wry>,
     theme_system: tauri::menu::CheckMenuItem<tauri::Wry>,
     show_favorites: tauri::menu::CheckMenuItem<tauri::Wry>,
+    show_explorer: tauri::menu::CheckMenuItem<tauri::Wry>,
 }
 
 /// Syncs menu item state with the frontend's document state. Called on
 /// every document or view-mode change.
 #[tauri::command]
-#[allow(clippy::needless_pass_by_value, clippy::fn_params_excessive_bools)]
+#[allow(
+    clippy::needless_pass_by_value,
+    clippy::fn_params_excessive_bools,
+    clippy::too_many_arguments
+)]
 fn set_menu_state(
     handles: tauri::State<'_, MenuHandles>,
     has_document: bool,
@@ -1768,6 +1773,7 @@ fn set_menu_state(
     view_mode: String,
     theme: String,
     show_favorites: bool,
+    show_explorer: bool,
 ) -> Result<(), String> {
     let apply = || -> tauri::Result<()> {
         handles.save.set_enabled(has_document)?;
@@ -1780,6 +1786,8 @@ fn set_menu_state(
         // clipboard, stdin) has nothing to favorite.
         handles.add_to_favorites.set_enabled(has_file_document)?;
         handles.show_favorites.set_checked(show_favorites)?;
+        handles.show_explorer.set_enabled(has_folder)?;
+        handles.show_explorer.set_checked(show_explorer)?;
 
         for (item, mode) in [
             (&handles.rendered, "rendered"),
@@ -1867,6 +1875,9 @@ fn build_menu(app: &tauri::App) -> tauri::Result<MenuHandles> {
     let add_folder_to_favorites =
         MenuItemBuilder::with_id("add-folder-to-favorites", "Add Folder to Favorites…").build(app)?;
     let show_favorites = CheckMenuItemBuilder::with_id("show-favorites", "Show Favorites").build(app)?;
+    let show_explorer = CheckMenuItemBuilder::with_id("show-explorer", "Show Explorer")
+        .enabled(false)
+        .build(app)?;
 
     let settings = MenuItemBuilder::with_id("settings", "Settings…")
         .accelerator("CmdOrCtrl+,")
@@ -1935,6 +1946,7 @@ fn build_menu(app: &tauri::App) -> tauri::Result<MenuHandles> {
         .build()?;
 
     let view_menu = SubmenuBuilder::new(app, "View")
+        .item(&show_explorer)
         .item(&show_favorites)
         .separator()
         .item(&rendered)
@@ -1970,6 +1982,7 @@ fn build_menu(app: &tauri::App) -> tauri::Result<MenuHandles> {
         theme_dark,
         theme_system,
         show_favorites,
+        show_explorer,
     })
 }
 
@@ -2241,6 +2254,7 @@ pub fn run(launch: Launch) {
                     | "add-to-favorites"
                     | "add-folder-to-favorites"
                     | "show-favorites"
+                    | "show-explorer"
             ) {
                 let _ = app.emit("menu-action", id);
             }

@@ -7,7 +7,6 @@
     EyeOff,
     FilePlus,
     FilePlus2,
-    FileText,
     FolderOpen,
     FolderPlus,
     Save,
@@ -31,6 +30,7 @@
   import FavoritesSidebar from "$lib/components/FavoritesSidebar.svelte";
   import QuickOpen from "$lib/components/QuickOpen.svelte";
   import SearchPanel from "$lib/components/SearchPanel.svelte";
+  import StatusBar from "$lib/components/StatusBar.svelte";
   import TabBar from "$lib/components/TabBar.svelte";
   import {
     MARKDOWN_EXTENSIONS,
@@ -80,6 +80,18 @@
   $effect(() => {
     localStorage.setItem("markive-show-hidden-files", String(showHiddenFiles));
   });
+
+  // Explorer visibility is independent of folderRoot — toggling it
+  // off from the status bar hides the sidebar without closing the
+  // folder. Defaults to visible (unlike showFavorites/showHiddenFiles)
+  // so existing users see no change in behavior.
+  let showExplorer = $state(localStorage.getItem("markive-show-explorer") !== "false");
+  $effect(() => {
+    localStorage.setItem("markive-show-explorer", String(showExplorer));
+  });
+  function toggleExplorer() {
+    if (folderRoot) showExplorer = !showExplorer;
+  }
 
   // Favorites sidebar visibility is a UI preference, not document or
   // favorites data — it doesn't belong in session.json or
@@ -229,6 +241,17 @@
     forgetTab: (id: string) => void;
     revealMatch: (line: number, matchStart: number, matchEnd: number) => void;
   } | null>(null);
+  let cursorInfo = $state<{
+    line: number;
+    column: number;
+    wordCount: number;
+    charCount: number;
+  } | null>(null);
+  // Editor unmounts with the last tab, so nothing would otherwise
+  // clear its last-reported stats out of the status bar.
+  $effect(() => {
+    if (!activeTab) cursorInfo = null;
+  });
 
   let isDirty = $derived(activeTab ? isTabDirty(activeTab) : false);
   let isOpening = $state(false);
@@ -1262,6 +1285,9 @@
       case "show-favorites":
         showFavorites = !showFavorites;
         break;
+      case "show-explorer":
+        toggleExplorer();
+        break;
     }
   }
 
@@ -1283,6 +1309,7 @@
       viewMode: activeTab?.viewMode ?? "rendered",
       theme: themePreference,
       showFavorites,
+      showExplorer,
     }).catch(() => {
       // A menu that lags the document state is not worth surfacing.
     });
@@ -1412,7 +1439,8 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
-<div class="flex min-h-screen bg-background text-foreground">
+<div class="flex h-screen flex-col overflow-hidden bg-background text-foreground">
+<div class="flex min-h-0 flex-1">
   {#if showFavorites}
     <FavoritesSidebar
       {favorites}
@@ -1421,8 +1449,8 @@
       onClose={() => (showFavorites = false)}
     />
   {/if}
-  {#if folderRoot}
-    <aside class="flex w-64 shrink-0 flex-col border-r border-border">
+  {#if folderRoot && showExplorer}
+    <aside class="flex min-h-0 w-64 shrink-0 flex-col border-r border-border">
       <div class="flex items-center justify-between gap-2 border-b border-border px-2 py-2">
         <div class="min-w-0">
           <p class="truncate text-sm font-medium" title={folderRoot}>
@@ -1474,7 +1502,7 @@
     </aside>
   {/if}
   <main
-    class={`grid min-w-0 flex-1 grid-rows-[auto_2.75rem_auto_auto_1fr] ${isDragOver ? "ring-2 ring-inset ring-ring" : ""}`}
+    class={`grid min-h-0 min-w-0 flex-1 grid-rows-[auto_2.75rem_auto_auto_1fr] ${isDragOver ? "ring-2 ring-inset ring-ring" : ""}`}
   >
   {#if tabs.length > 0}
     <TabBar {tabs} {activeTabId} onSelect={switchToTab} onClose={closeTab} onReorder={reorderTabs} />
@@ -1482,14 +1510,7 @@
     <div></div>
   {/if}
 
-  <header class="path-rail flex items-center justify-between gap-4 border-b border-border px-4">
-    <div class="flex min-w-0 items-center gap-2 font-mono text-xs text-muted-foreground">
-      <FileText aria-hidden="true" class="size-3.5 shrink-0" strokeWidth={1.75} />
-      <span class="truncate">{sourceLabel}</span>
-      {#if isDirty}
-        <span class="shrink-0 text-foreground" title="Unsaved changes" aria-label="Unsaved changes">•</span>
-      {/if}
-    </div>
+  <header class="path-rail flex items-center justify-end gap-4 border-b border-border px-4">
     {#if activeTab}
       <div class="flex items-center gap-1">
         <div class="mr-2 flex items-center rounded-md border border-border p-0.5" role="group" aria-label="View mode">
@@ -1667,6 +1688,7 @@
             fontSize={editorFontSize}
             lineWrap={preferences.lineWrap}
             onchange={handleEdit}
+            onstats={(stats) => (cursorInfo = stats)}
           />
         </div>
         {#if activeTab.viewMode !== "source"}
@@ -1774,6 +1796,17 @@
     </section>
   {/if}
   </main>
+</div>
+  <StatusBar
+    {folderRoot}
+    {showExplorer}
+    {showFavorites}
+    onToggleExplorer={toggleExplorer}
+    onToggleFavorites={() => (showFavorites = !showFavorites)}
+    {sourceLabel}
+    {isDirty}
+    {cursorInfo}
+  />
 </div>
 
 {#if quickOpenOpen && folderRoot}
