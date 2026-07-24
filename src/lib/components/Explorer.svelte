@@ -1,6 +1,8 @@
 <script lang="ts">
   import { FileWarning } from "@lucide/svelte";
   import { invoke } from "@tauri-apps/api/core";
+  import { listen } from "@tauri-apps/api/event";
+  import { onMount } from "svelte";
 
   import {
     destinationPath,
@@ -51,6 +53,19 @@
   $effect(() => {
     void [rootPath, refreshToken];
     void load(rootPath);
+  });
+
+  // The backend watches the whole folder root; an external change
+  // (another editor, `git checkout`, a sync client) bumps the same
+  // refreshToken internal mutations already use, so it's picked up
+  // without collapsing and re-expanding.
+  onMount(() => {
+    const unlisten = listen("folder-tree-changed", () => {
+      refreshToken += 1;
+    });
+    return () => {
+      void unlisten.then((stop) => stop());
+    };
   });
 
   let visible = $derived(entries ? visibleEntries(entries, showHidden) : []);
