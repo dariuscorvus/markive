@@ -1,11 +1,13 @@
 <script lang="ts">
   import { ChevronRight, File, FilePlus, FileWarning, Folder, FolderPlus, Link, Loader2, Trash2 } from "@lucide/svelte";
   import { invoke } from "@tauri-apps/api/core";
+  import { untrack } from "svelte";
 
   import {
     destinationPath,
     isSameOrDescendant,
     isSymlinkCycle,
+    refreshDecision,
     visibleEntries,
     type ExplorerActions,
     type FolderEntry,
@@ -82,12 +84,18 @@
   // the tree — the simplest way for a rename or move to be reflected
   // both at its old location and its new one, wherever in the tree
   // those are.
+  //
+  // The `children`/`expanded` read is wrapped in `untrack` so this
+  // effect's only tracked dependency is `refreshToken`. Reading
+  // `children` untracked still lets `loadChildren` write to it later
+  // without re-triggering this same effect — otherwise that write
+  // re-enters the branch below, resets `children` to null, reloads,
+  // writes again, and loops forever.
   $effect(() => {
     void refreshToken;
-    if (children !== null) {
-      children = null;
-      if (expanded) void loadChildren();
-    }
+    const { resetChildren, reload } = untrack(() => refreshDecision(children !== null, expanded));
+    if (resetChildren) children = null;
+    if (reload) void loadChildren();
   });
 
   // A "New File"/"New Folder" action elsewhere in the tree asks the

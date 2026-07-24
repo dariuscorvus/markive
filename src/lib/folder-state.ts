@@ -40,6 +40,17 @@ export function destinationPath(targetDirPath: string, entryName: string): strin
   return `${targetDirPath}/${entryName}`;
 }
 
+// What a refresh should do to a node's children: only a node whose
+// children were already loaded has a cache to invalidate, and only an
+// expanded node needs that cache refetched right away — a collapsed
+// node's stale cache is just discarded, to be reloaded next time it
+// expands.
+export type RefreshDecision = { resetChildren: boolean; reload: boolean };
+
+export function refreshDecision(hasChildren: boolean, expanded: boolean): RefreshDecision {
+  return { resetChildren: hasChildren, reload: hasChildren && expanded };
+}
+
 // Callbacks threaded through the explorer tree as one stable object,
 // rather than as six separate props at every recursion level.
 export type ExplorerActions = {

@@ -5,6 +5,7 @@ import {
   isHiddenEntry,
   isSameOrDescendant,
   isSymlinkCycle,
+  refreshDecision,
   visibleEntries,
   type FolderEntry,
 } from "./folder-state";
@@ -73,5 +74,20 @@ describe("isSameOrDescendant", () => {
 describe("destinationPath", () => {
   test("joins the target directory and entry name", () => {
     expect(destinationPath("/root/sub", "note.md")).toBe("/root/sub/note.md");
+  });
+});
+
+describe("refreshDecision", () => {
+  test("a node with no loaded children has nothing to invalidate", () => {
+    expect(refreshDecision(false, false)).toEqual({ resetChildren: false, reload: false });
+    expect(refreshDecision(false, true)).toEqual({ resetChildren: false, reload: false });
+  });
+
+  test("a collapsed node with cached children discards the cache without reloading", () => {
+    expect(refreshDecision(true, false)).toEqual({ resetChildren: true, reload: false });
+  });
+
+  test("an expanded node with cached children invalidates and reloads", () => {
+    expect(refreshDecision(true, true)).toEqual({ resetChildren: true, reload: true });
   });
 });
