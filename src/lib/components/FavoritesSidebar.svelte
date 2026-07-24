@@ -54,7 +54,7 @@
   let tree = $derived(buildFavoritesTree(favorites));
 </script>
 
-<aside class="flex w-64 shrink-0 flex-col border-r border-border">
+<aside class="flex min-h-0 w-64 shrink-0 flex-col border-r border-border">
   <div class="flex items-center justify-between gap-2 border-b border-border px-2 py-2">
     <div class="flex items-center gap-1 text-sm font-medium" role="tablist" aria-label="Favorites views">
       <button
