@@ -1656,7 +1656,7 @@
          CodeMirror selection and undo history survive switching away
          and back — only visibility and layout change. -->
     <section
-      class="grid min-h-0 grid-rows-[auto_1fr] bg-card"
+      class="grid min-h-0 min-w-0 grid-rows-[auto_1fr] bg-card"
       aria-label={`${activeTab.viewMode === "split" ? "Split view" : activeTab.viewMode === "source" ? "Source" : "Rendered"} of ${documentName}`}
     >
       {#if errorMessage}
@@ -1682,9 +1682,9 @@
       {:else}
         <div></div>
       {/if}
-      <div class={`grid min-h-0 ${activeTab.viewMode === "split" ? "grid-cols-2" : "grid-cols-1"}`}>
+      <div class={`grid min-h-0 min-w-0 ${activeTab.viewMode === "split" ? "grid-cols-2" : "grid-cols-1"}`}>
         <div
-          class={`min-h-0 ${activeTab.viewMode === "split" ? "border-r border-border" : ""} ${activeTab.viewMode === "rendered" ? "hidden" : ""}`}
+          class={`min-h-0 min-w-0 ${activeTab.viewMode === "split" ? "border-r border-border" : ""} ${activeTab.viewMode === "rendered" ? "hidden" : ""}`}
         >
           <Editor
             bind:this={editorRef}
@@ -1703,7 +1703,7 @@
                rule does not model. -->
           <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
           <div
-            class="min-h-0 overflow-auto focus-visible:outline-2 focus-visible:outline-ring"
+            class="min-h-0 min-w-0 overflow-auto focus-visible:outline-2 focus-visible:outline-ring"
             bind:this={renderedScrollEl}
             tabindex="0"
             role="region"
