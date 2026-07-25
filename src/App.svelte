@@ -813,20 +813,26 @@
     try {
       const copiedFiles = await invoke<string[]>("clipboard_files");
 
-      if (copiedFiles.length > 1) {
-        errorMessage = "The clipboard contains multiple files. Copy one Markdown file.";
-        return;
-      }
+      if (copiedFiles.length >= 1) {
+        const markdownFiles = copiedFiles.filter(isMarkdownPath);
+        const skippedFiles = copiedFiles.filter((path) => !isMarkdownPath(path));
 
-      if (copiedFiles.length === 1) {
-        const copiedPath = copiedFiles[0];
-
-        if (!isMarkdownPath(copiedPath)) {
-          errorMessage = `${fileName(copiedPath)} is not a Markdown file.`;
+        if (markdownFiles.length === 0) {
+          errorMessage =
+            copiedFiles.length === 1
+              ? `${fileName(copiedFiles[0])} is not a Markdown file.`
+              : "The clipboard contains no Markdown files.";
           return;
         }
 
-        await openPathInTab(copiedPath);
+        for (const path of markdownFiles) {
+          await openPathInTab(path);
+        }
+
+        if (skippedFiles.length > 0) {
+          errorMessage = `Skipped ${skippedFiles.length} unsupported file${skippedFiles.length === 1 ? "" : "s"}: ${skippedFiles.map(fileName).join(", ")}`;
+        }
+
         return;
       }
 
