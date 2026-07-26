@@ -6,71 +6,76 @@ struct DocumentListView: View {
     @State private var documentPendingTrash: PrototypeDocument?
 
     var body: some View {
-        Group {
-            if model.workspaceName == nil {
-                ContentUnavailableView(
-                    "No Workspace",
-                    systemImage: "archivebox",
-                    description: Text("Open a workspace to browse its documents.")
-                )
-            } else if model.visibleDocuments.isEmpty {
-                if model.searchText.isEmpty {
-                    ContentUnavailableView {
-                        Label("No Documents", systemImage: "doc")
-                    } description: {
-                        Text("This collection has no Markdown documents.")
-                    } actions: {
-                        Button("Create Document") { model.newDocument() }
+        // The List must stay in the hierarchy permanently: swapping it out for an
+        // empty-state view re-hosts the toolbar search field and detaches it from
+        // its binding on macOS. Empty states render as an overlay instead.
+        documentList
+            .overlay { emptyStateOverlay }
+            .navigationTitle(model.sidebarTitle)
+            .navigationSplitViewColumnWidth(min: 240, ideal: 300)
+            .searchable(text: $model.searchText, prompt: "Search documents")
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        model.newDocument()
+                    } label: {
+                        Label("New Document", systemImage: "square.and.pencil")
                     }
-                } else {
-                    ContentUnavailableView.search(text: model.searchText)
+                    .disabled(model.workspaceName == nil)
+                    .help("Create a new Markdown document (⌘N)")
+                }
+                ToolbarItem {
+                    Menu {
+                        Picker("Sort By", selection: $model.sortOrder) {
+                            ForEach(DocumentSortOrder.allCases) { order in
+                                Text(order.label).tag(order)
+                            }
+                        }
+                        .pickerStyle(.inline)
+                    } label: {
+                        Label("Sort", systemImage: "arrow.up.arrow.down")
+                    }
+                    .help("Change how documents are sorted")
+                }
+            }
+            .confirmationDialog(
+                "Move “\(documentPendingTrash?.title ?? "")” to the Trash?",
+                isPresented: Binding(
+                    get: { documentPendingTrash != nil },
+                    set: { if !$0 { documentPendingTrash = nil } }
+                ),
+                titleVisibility: .visible
+            ) {
+                Button("Move to Trash", role: .destructive) {
+                    if let document = documentPendingTrash { model.remove(document) }
+                    documentPendingTrash = nil
+                }
+                Button("Cancel", role: .cancel) { documentPendingTrash = nil }
+            } message: {
+                Text("The document is removed from the prototype's in-memory store only.")
+            }
+    }
+
+    @ViewBuilder
+    private var emptyStateOverlay: some View {
+        if model.workspaceName == nil {
+            ContentUnavailableView(
+                "No Workspace",
+                systemImage: "archivebox",
+                description: Text("Open a workspace to browse its documents.")
+            )
+        } else if model.visibleDocuments.isEmpty {
+            if model.searchText.isEmpty {
+                ContentUnavailableView {
+                    Label("No Documents", systemImage: "doc")
+                } description: {
+                    Text("This collection has no Markdown documents.")
+                } actions: {
+                    Button("Create Document") { model.newDocument() }
                 }
             } else {
-                documentList
+                ContentUnavailableView.search(text: model.searchText)
             }
-        }
-        .navigationTitle(model.sidebarTitle)
-        .navigationSplitViewColumnWidth(min: 240, ideal: 300)
-        .searchable(text: $model.searchText, prompt: "Search documents")
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button {
-                    model.newDocument()
-                } label: {
-                    Label("New Document", systemImage: "square.and.pencil")
-                }
-                .disabled(model.workspaceName == nil)
-                .help("Create a new Markdown document (⌘N)")
-            }
-            ToolbarItem {
-                Menu {
-                    Picker("Sort By", selection: $model.sortOrder) {
-                        ForEach(DocumentSortOrder.allCases) { order in
-                            Text(order.label).tag(order)
-                        }
-                    }
-                    .pickerStyle(.inline)
-                } label: {
-                    Label("Sort", systemImage: "arrow.up.arrow.down")
-                }
-                .help("Change how documents are sorted")
-            }
-        }
-        .confirmationDialog(
-            "Move “\(documentPendingTrash?.title ?? "")” to the Trash?",
-            isPresented: Binding(
-                get: { documentPendingTrash != nil },
-                set: { if !$0 { documentPendingTrash = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            Button("Move to Trash", role: .destructive) {
-                if let document = documentPendingTrash { model.remove(document) }
-                documentPendingTrash = nil
-            }
-            Button("Cancel", role: .cancel) { documentPendingTrash = nil }
-        } message: {
-            Text("The document is removed from the prototype's in-memory store only.")
         }
     }
 

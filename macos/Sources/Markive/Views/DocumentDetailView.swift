@@ -88,10 +88,12 @@ struct DocumentDetailView: View {
             }
             .disabled(model.selectedDocument == nil)
             .help("Add or remove this document from Favorites")
-            if let document = model.selectedDocument {
-                ShareLink(item: document.content)
-                    .help("Share the document text")
-            }
+            // Unconditional so the toolbar structure never rebuilds mid-typing:
+            // conditional toolbar content re-hosts the search field and can
+            // detach it from its binding, like the List/empty-state swap did.
+            ShareLink(item: model.selectedDocument?.content ?? "")
+                .disabled(model.selectedDocument == nil)
+                .help("Share the document text")
             Button {
                 model.isInspectorPresented.toggle()
             } label: {
