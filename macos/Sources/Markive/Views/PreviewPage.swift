@@ -26,6 +26,15 @@ enum PreviewPage {
         """
     }
 
+    /// JS that swaps the rendered body in place — no navigation, so the
+    /// scroll position survives live re-renders.
+    static func contentSwapScript(body: String) -> String? {
+        guard let json = try? String(data: JSONEncoder().encode(body), encoding: .utf8) else {
+            return nil
+        }
+        return "document.getElementById('content').innerHTML = \(json);"
+    }
+
     static func escape(_ text: String) -> String {
         text.replacingOccurrences(of: "&", with: "&amp;")
             .replacingOccurrences(of: "<", with: "&lt;")

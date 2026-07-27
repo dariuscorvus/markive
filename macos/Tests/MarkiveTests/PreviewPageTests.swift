@@ -41,6 +41,14 @@ import Testing
         #expect(PreviewPage.containedFileURL(requestPath: "", workspaceRoot: canonicalRoot) == nil)
     }
 
+    @Test func contentSwapScriptEncodesBodySafely() throws {
+        let script = try #require(PreviewPage.contentSwapScript(
+            body: "<p>quote \" backslash \\ newline \n</p>"
+        ))
+        #expect(script.hasPrefix("document.getElementById('content').innerHTML = "))
+        #expect(script.contains(#"quote \" backslash \\ newline \n"#))
+    }
+
     @Test func mimeTypes() {
         #expect(PreviewPage.mimeType(forExtension: "PNG") == "image/png")
         #expect(PreviewPage.mimeType(forExtension: "jpeg") == "image/jpeg")
