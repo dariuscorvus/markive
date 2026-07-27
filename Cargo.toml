@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/markive-core", "crates/markive-ffi", "src-tauri"]
+members = ["crates/markive-core", "crates/markive-ffi"]
 resolver = "2"
 
 [workspace.package]
