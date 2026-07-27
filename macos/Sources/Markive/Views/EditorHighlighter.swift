@@ -156,6 +156,10 @@ final class EditorHighlighter {
                 layoutManager.addRenderingAttribute(key, value: value, for: textRange)
             }
         }
+        // Rendering-attribute changes don't mark the view dirty on their
+        // own — without this, new colors wait for the next incidental
+        // redraw (caret blink, scroll) to appear.
+        textView?.needsDisplay = true
     }
 
     /// The validator: colors the parts of `fragment` that overlap the
