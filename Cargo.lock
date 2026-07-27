@@ -2187,6 +2187,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "markive-ffi"
+version = "0.1.1"
+dependencies = [
+ "markive-core",
+]
+
+[[package]]
 name = "markup5ever"
 version = "0.38.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -6,6 +6,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+scripts/build-ffi.sh
 swift build
 
 app=.build/debug/Markive.app
