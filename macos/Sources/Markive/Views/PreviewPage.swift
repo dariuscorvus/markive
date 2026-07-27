@@ -182,9 +182,9 @@ enum PreviewPage {
         --tok-type: #a2845e;
         --danger: #ff3b30;
         --danger-bg: rgba(255, 59, 48, .1);
-        --glass-bg-top: rgba(255, 255, 255, .5);
-        --glass-bg-bottom: rgba(255, 255, 255, .3);
-        --glass-border: rgba(0, 0, 0, .05);
+        --glass-bg-left: rgba(255, 255, 255, .5);
+        --glass-bg-right: rgba(255, 255, 255, .3);
+        --glass-border: rgba(0, 0, 0, .03);
         --glass-highlight: rgba(255, 255, 255, .5);
     }
     @media (prefers-color-scheme: dark) {
@@ -202,9 +202,9 @@ enum PreviewPage {
             --tok-type: #ac8e68;
             --danger: #ff453a;
             --danger-bg: rgba(255, 69, 58, .15);
-            --glass-bg-top: rgba(255, 255, 255, .07);
-            --glass-bg-bottom: rgba(255, 255, 255, .02);
-            --glass-border: rgba(255, 255, 255, .07);
+            --glass-bg-left: rgba(255, 255, 255, .07);
+            --glass-bg-right: rgba(255, 255, 255, .02);
+            --glass-border: rgba(255, 255, 255, .04);
             --glass-highlight: rgba(255, 255, 255, .1);
         }
     }
@@ -240,7 +240,7 @@ enum PreviewPage {
         padding: 1em;
         overflow-x: auto;
         border-radius: 12px;
-        background: linear-gradient(180deg, var(--glass-bg-top), var(--glass-bg-bottom));
+        background: linear-gradient(90deg, var(--glass-bg-left), var(--glass-bg-right));
         backdrop-filter: blur(24px) saturate(180%);
         -webkit-backdrop-filter: blur(24px) saturate(180%);
         box-shadow: inset 0 0 0 .5px var(--glass-border), inset 0 1px 0 var(--glass-highlight);
