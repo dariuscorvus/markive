@@ -15,6 +15,9 @@ final class MarkdownDocument: NSDocument {
     @Observable
     nonisolated final class Buffer {
         var text = ""
+        /// The file changed on disk while local edits are unsaved; the UI
+        /// offers Reload / Keep My Version.
+        var hasConflict = false
     }
 
     nonisolated(unsafe) let buffer = Buffer()
@@ -37,5 +40,45 @@ final class MarkdownDocument: NSDocument {
     /// Called from the editor binding on every edit; schedules autosave.
     func noteEdited() {
         updateChangeCount(.changeDone)
+    }
+
+    // MARK: - External changes
+
+    /// NSDocument registers itself as the file's NSFilePresenter; this fires
+    /// (on the presenter queue) when another process touches the file.
+    override nonisolated func presentedItemDidChange() {
+        Task { @MainActor in self.checkExternalChange() }
+    }
+
+    /// Clean documents reload silently; dirty ones flag a conflict for the UI.
+    /// Our own autosaves don't trip this — their date matches fileModificationDate.
+    func checkExternalChange() {
+        guard let url = fileURL,
+              let diskDate = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date,
+              let knownDate = fileModificationDate,
+              diskDate > knownDate else { return }
+        if hasUnautosavedChanges {
+            buffer.hasConflict = true
+        } else {
+            try? revert(toContentsOf: url, ofType: fileType ?? Self.markdownType)
+        }
+    }
+
+    func resolveConflictReloading() {
+        buffer.hasConflict = false
+        if let url = fileURL {
+            try? revert(toContentsOf: url, ofType: fileType ?? Self.markdownType)
+        }
+    }
+
+    func resolveConflictKeepingLocal() {
+        buffer.hasConflict = false
+        // Acknowledge the disk version so saving doesn't raise the
+        // "changed by another application" alert, then overwrite it.
+        if let url = fileURL,
+           let diskDate = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date {
+            fileModificationDate = diskDate
+        }
+        save(nil)
     }
 }

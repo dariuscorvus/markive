@@ -101,6 +101,33 @@ private struct DocumentContentView: View {
     var document: DocumentItem
 
     var body: some View {
+        Group {
+            content
+        }
+        .alert(
+            "“\(document.title)” changed on disk",
+            isPresented: conflictBinding
+        ) {
+            Button("Reload") {
+                model.openedDocument?.document?.resolveConflictReloading()
+            }
+            Button("Keep My Version", role: .cancel) {
+                model.openedDocument?.document?.resolveConflictKeepingLocal()
+            }
+        } message: {
+            Text("Another application modified this file while you have unsaved edits. Reload discards your edits; Keep My Version overwrites the file.")
+        }
+    }
+
+    private var conflictBinding: Binding<Bool> {
+        Binding(
+            get: { model.openedDocument?.document?.buffer.hasConflict ?? false },
+            set: { if !$0 { model.openedDocument?.document?.buffer.hasConflict = false } }
+        )
+    }
+
+    @ViewBuilder
+    private var content: some View {
         switch model.openedDocument?.state {
         case nil:
             ProgressView()

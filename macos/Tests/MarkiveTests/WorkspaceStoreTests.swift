@@ -172,6 +172,99 @@ private func isolatedDefaults() -> UserDefaults {
     }
 }
 
+@Suite struct ExternalChangeTests {
+    /// Writes new content with a modification date clearly newer than the
+    /// document's known one — filesystem timestamps are too coarse to rely on.
+    private func writeExternally(_ content: String, to url: URL) throws {
+        try content.write(to: url, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(5)],
+            ofItemAtPath: url.path
+        )
+    }
+
+    @MainActor
+    @Test func cleanDocumentReloadsSilently() throws {
+        let fixture = try FixtureWorkspace(files: [("doc.md", "v1")])
+        defer { fixture.tearDown() }
+        let root = fixture.root.standardizedFileURL.resolvingSymlinksInPath()
+        let item = try #require(WorkspaceStore.item(
+            at: root.appendingPathComponent("doc.md"), root: root, rootName: "F"
+        ))
+        let document = try DocumentSession().document(for: item)
+
+        try writeExternally("v2", to: item.url)
+        document.checkExternalChange()
+
+        #expect(document.buffer.text == "v2")
+        #expect(!document.buffer.hasConflict)
+    }
+
+    @MainActor
+    @Test func dirtyDocumentFlagsConflictAndKeepsEdits() throws {
+        let fixture = try FixtureWorkspace(files: [("doc.md", "v1")])
+        defer { fixture.tearDown() }
+        let root = fixture.root.standardizedFileURL.resolvingSymlinksInPath()
+        let item = try #require(WorkspaceStore.item(
+            at: root.appendingPathComponent("doc.md"), root: root, rootName: "F"
+        ))
+        let document = try DocumentSession().document(for: item)
+        document.buffer.text = "local edit"
+        document.noteEdited()
+
+        try writeExternally("v2", to: item.url)
+        document.checkExternalChange()
+
+        #expect(document.buffer.hasConflict)
+        #expect(document.buffer.text == "local edit")
+
+        document.resolveConflictReloading()
+        #expect(document.buffer.text == "v2")
+        #expect(!document.buffer.hasConflict)
+    }
+
+    @MainActor
+    @Test func rescanPreservesIdentityAcrossExternalRename() async throws {
+        let fixture = try FixtureWorkspace(files: [("Before.md", "content")])
+        defer { fixture.tearDown() }
+        let store = WorkspaceStore(defaults: isolatedDefaults())
+        await store.openWorkspace(at: fixture.root)
+        let before = try #require(store.documents.first)
+
+        try FileManager.default.moveItem(
+            at: before.url,
+            to: before.url.deletingLastPathComponent().appendingPathComponent("After.md")
+        )
+        await store.rescan()
+
+        let after = try #require(store.documents.first)
+        #expect(after.id == before.id)
+        #expect(after.title == "After")
+    }
+
+    @MainActor
+    @Test func watcherPicksUpExternalCreate() async throws {
+        let fixture = try FixtureWorkspace(files: [("one.md", "1")])
+        defer { fixture.tearDown() }
+        let store = WorkspaceStore(defaults: isolatedDefaults())
+        await store.openWorkspace(at: fixture.root)
+        #expect(store.documents.count == 1)
+
+        try "2".write(
+            to: fixture.root.appendingPathComponent("two.md"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        var found = false
+        for _ in 0..<50 {
+            if store.documents.count == 2 { found = true; break }
+            try await Task.sleep(for: .milliseconds(200))
+        }
+        #expect(found, "watcher did not trigger a rescan within 10 s")
+    }
+}
+
 @Suite struct WriteOperationTests {
     @MainActor
     @Test func createNumbersUntitledDocuments() async throws {

@@ -21,6 +21,7 @@ final class WorkspaceStore {
     private var securityScopedRoot: URL?
     private var scanGeneration = 0
     private var didAttemptRestore = false
+    private var watcher: WorkspaceWatcher?
 
     static let recentBookmarksKey = "recentWorkspaceBookmarks"
     static let maxRecents = 5
@@ -56,6 +57,24 @@ final class WorkspaceStore {
         folderTree = snapshot.folders
         documents = snapshot.documents
         isLoading = false
+
+        watcher = WorkspaceWatcher(root: root) { [weak self] in
+            Task { @MainActor in await self?.rescan() }
+        }
+    }
+
+    /// Re-scan after filesystem changes (FSEvents). Inode identity keeps
+    /// selection and open documents stable across external renames.
+    func rescan() async {
+        guard let rootURL, let rootName else { return }
+        scanGeneration += 1
+        let generation = scanGeneration
+        let snapshot = await Task.detached(priority: .utility) {
+            Self.scan(root: rootURL, rootName: rootName)
+        }.value
+        guard generation == scanGeneration else { return }
+        folderTree = snapshot.folders
+        documents = snapshot.documents
     }
 
     /// Reopen the most recent workspace on launch. No-op if a workspace is already
