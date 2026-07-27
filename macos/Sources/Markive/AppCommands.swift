@@ -19,10 +19,9 @@ struct AppCommands: Commands {
     private var fileCommands: some Commands {
         Group {
             CommandGroup(replacing: .newItem) {
-                // Document creation arrives with the editing layer.
-                Button("New Document") {}
+                Button("New Document") { workspace?.newDocument() }
                     .keyboardShortcut("n")
-                    .disabled(true)
+                    .disabled(workspace?.isWorkspaceOpen != true)
                 Button("New Window") { openWindow(id: "main") }
                     .keyboardShortcut("n", modifiers: [.command, .shift])
                 Divider()
@@ -34,10 +33,10 @@ struct AppCommands: Commands {
                     .disabled(workspace?.isWorkspaceOpen != true)
             }
             CommandGroup(replacing: .saveItem) {
-                // Saving arrives with the editing layer.
-                Button("Save") {}
+                // Documents autosave in place; ⌘S commits immediately.
+                Button("Save") { workspace?.saveSelectedDocument() }
                     .keyboardShortcut("s")
-                    .disabled(true)
+                    .disabled(workspace?.openedDocument?.document == nil)
             }
             // Frees ⌘P for Quick Open; printing Markdown is a later concern.
             CommandGroup(replacing: .printItem) {}

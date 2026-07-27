@@ -1,19 +1,20 @@
 import SwiftUI
 
-/// Read-only Markdown source view. Becomes an editable NSDocument-backed
-/// editor in the editing layer — read-only here so nothing pretends to save.
+/// Markdown source editor bound to an open NSDocument. Every edit updates the
+/// document's change count, which schedules autosave-in-place.
+/// TextEditor is the placeholder editor; the TextKit 2 editor replaces it later.
 struct MarkdownEditorView: View {
-    var text: String
+    var document: MarkdownDocument
 
     var body: some View {
-        ScrollView {
-            Text(text)
-                .font(.system(.body, design: .monospaced))
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding()
-        }
-        .background(.background)
-        .accessibilityLabel("Markdown source")
+        TextEditor(text: Binding(
+            get: { document.buffer.text },
+            set: { newValue in
+                document.buffer.text = newValue
+                document.noteEdited()
+            }
+        ))
+        .font(.system(.body, design: .monospaced))
+        .accessibilityLabel("Markdown source editor")
     }
 }

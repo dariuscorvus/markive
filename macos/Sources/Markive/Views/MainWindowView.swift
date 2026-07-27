@@ -36,6 +36,15 @@ struct MainWindowView: View {
         .task {
             await model.store.restoreMostRecentWorkspace()
         }
+        .alert(
+            model.lastErrorMessage ?? "",
+            isPresented: Binding(
+                get: { model.lastErrorMessage != nil },
+                set: { if !$0 { model.lastErrorMessage = nil } }
+            )
+        ) {
+            Button("OK", role: .cancel) { model.lastErrorMessage = nil }
+        }
         .focusedSceneValue(\.workspace, model)
     }
 }

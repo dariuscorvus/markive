@@ -39,8 +39,26 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
 	<string>26.0</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Markdown Document</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>net.daringfireball.markdown</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>
 PLIST
+
+# Re-sign after swapping the binary — replacing the executable inside a
+# registered bundle without re-signing gets the app SIGKILLed by the
+# code-signing monitor (Taskgated Invalid Signature).
+codesign --force --sign - "$app"
 
 open "$app"

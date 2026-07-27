@@ -33,7 +33,8 @@ struct DocumentInspectorView: View {
                     Text(document.modifiedAt, format: .dateTime.day().month().year().hour().minute())
                 }
             }
-            if let text = model.openedDocument?.text, model.openedDocument?.id == document.id {
+            if let text = model.openedDocument?.document?.buffer.text,
+               model.openedDocument?.id == document.id {
                 Section("Statistics") {
                     LabeledContent(
                         "Words",
