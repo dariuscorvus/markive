@@ -1,10 +1,10 @@
-# Native (SwiftUI) app release: an ad-hoc-signed zip on every native-v* tag.
+# Native (SwiftUI) app release: an ad-hoc-signed DMG on every native-v* tag.
 # The app is unsigned for distribution — after download it needs
 # `xattr -dr com.apple.quarantine`, same as any unsigned bundle. Developer ID
 # signing and notarization can be added by mirroring release.yml when the
 # native app leaves alpha.
 #
-# workflow_dispatch builds and uploads the zip as a run artifact without
+# workflow_dispatch builds and uploads the DMG as a run artifact without
 # creating a release — the dry-run path.
 name: Native release
 
@@ -47,19 +47,27 @@ jobs:
           CODE_SIGN_IDENTITY=- build
         working-directory: macos
 
-      - name: Verify architectures, sandbox entitlement, and zip
+      - name: Verify architectures and sandbox entitlement, build DMG
         run: |
           app=macos/DerivedData/Build/Products/Release/Markive.app
           lipo -archs "$app/Contents/MacOS/Markive" | tee /dev/stderr | grep -q "x86_64 arm64"
           codesign -d --entitlements - "$app" | grep -q "com.apple.security.app-sandbox"
-          ditto -c -k --keepParent "$app" Markive-native.zip
+
+          version="${GITHUB_REF_NAME#native-v}"
+          [ "${GITHUB_REF_NAME}" = "${version}" ] && version=dev
+          staging=$(mktemp -d)
+          cp -R "$app" "$staging/"
+          ln -s /Applications "$staging/Applications"
+          hdiutil create -volname "Markive" -srcfolder "$staging" -ov -format UDZO \
+            "Markive-native_${version}.dmg"
+          echo "DMG=Markive-native_${version}.dmg" >> "$GITHUB_ENV"
 
       - name: Upload artifact (dry runs)
         if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
           name: Markive-native
-          path: Markive-native.zip
+          path: Markive-native_*.dmg
 
       - name: Create prerelease
         if: startsWith(github.ref, 'refs/tags/native-v')
@@ -68,6 +76,6 @@ jobs:
             --prerelease \
             --title "Markive native ${GITHUB_REF_NAME#native-}" \
             --notes "$(cat .github/release-notes/install-unsigned.md)" \
-            Markive-native.zip
+            "$DMG"
         env:
           GH_TOKEN: ${{ github.token }}
