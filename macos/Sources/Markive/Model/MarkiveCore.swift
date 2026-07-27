@@ -7,6 +7,7 @@ struct EditorHighlight: Equatable, Sendable {
     /// Mirrors the FFI kind discriminants (markive_ffi.h). Order matters.
     enum Kind: UInt8, CaseIterable, Sendable {
         case heading, emphasis, strong, codeSpan, codeBlock, link, listMarker, blockquote
+        case codeKeyword, codeString, codeComment, codeNumber, codeFunction, codeType
     }
 
     var range: NSRange

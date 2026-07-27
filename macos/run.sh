@@ -20,6 +20,7 @@ fi
 cp .build/debug/Markive "$app/Contents/MacOS/Markive"
 mkdir -p "$app/Contents/Resources"
 cp Resources/AppIcon.icns "$app/Contents/Resources/AppIcon.icns"
+cp Resources/vendor/mermaid.min.js "$app/Contents/Resources/mermaid.min.js"
 
 cat > "$app/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>

@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 use std::ffi::OsStr;
+use std::fmt::Write as _;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -9,7 +10,10 @@ use std::path::Component;
 
 use ammonia::Builder;
 use percent_encoding::percent_decode_str;
-use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{CodeBlockKind, CowStr, Event, Options, Parser, Tag, TagEnd};
+
+mod code_highlight;
+use code_highlight::CodeToken;
 
 /// File extensions Markive treats as Markdown documents.
 pub const MARKDOWN_EXTENSIONS: [&str; 4] = ["md", "markdown", "mdown", "mkd"];
@@ -155,6 +159,10 @@ fn sanitize(html: &str) -> String {
         .add_tag_attributes("section", ["class", "id"])
         .add_tag_attributes("article", ["class", "id"])
         .add_tag_attributes("figure", ["class", "id"])
+        // `language-xxx` on `<code>` and `tok-xxx` on `<span>`, both from
+        // the fenced-code-block highlighter's own fixed vocabulary.
+        .add_tag_attributes("code", ["class"])
+        .add_tag_attributes("span", ["class"])
         .add_tag_attributes("details", ["open"])
         .add_tag_attributes("input", ["checked", "disabled", "type"])
         .add_tag_attributes("button", ["disabled", "type"])
@@ -226,10 +234,95 @@ fn events_with_heading_ids(markdown: &str) -> Vec<Event<'_>> {
     events
 }
 
+/// Replaces each fenced code block that names a recognized language with
+/// a pre-rendered, syntax-highlighted `<pre><code>` [`Event::Html`]. Fences
+/// with no info string, an unrecognized language, or indented code blocks
+/// pass through untouched — `pulldown_cmark::html` renders those as it
+/// always has.
+fn highlight_code_blocks(events: Vec<Event<'_>>) -> Vec<Event<'_>> {
+    let mut output = Vec::with_capacity(events.len());
+    let mut iter = events.into_iter();
+
+    while let Some(event) = iter.next() {
+        let language = match &event {
+            Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(info))) => {
+                info.split_whitespace().next().map(str::to_owned)
+            }
+            _ => None,
+        };
+        let Some(language) = language.filter(|lang| !lang.is_empty()) else {
+            output.push(event);
+            continue;
+        };
+
+        let mut code = String::new();
+        for next in iter.by_ref() {
+            match next {
+                Event::Text(text) => code.push_str(&text),
+                Event::End(TagEnd::CodeBlock) => break,
+                _ => {}
+            }
+        }
+
+        let mut html = format!(
+            "<pre><code class=\"language-{}\">",
+            encode_attribute(&language)
+        );
+        highlight_code_block_html(&mut html, &code, &language);
+        html.push_str("</code></pre>");
+        output.push(Event::Html(CowStr::from(html)));
+    }
+
+    output
+}
+
+/// Appends `code`, highlighted as `language`, to `out` as HTML: each
+/// classified token wrapped in `<span class="tok-KIND">`, everything
+/// else escaped plain text. `code` and unclassified text are identical
+/// to what pulldown-cmark's own writer would have escaped.
+fn highlight_code_block_html(out: &mut String, code: &str, language: &str) {
+    let mut pos = 0usize;
+    for span in code_highlight::highlight(code, language) {
+        if span.start > pos {
+            escape_html_text(out, &code[pos..span.start]);
+        }
+        let _ = write!(out, "<span class=\"{}\">", token_class(span.token));
+        escape_html_text(out, &code[span.start..span.end]);
+        out.push_str("</span>");
+        pos = span.end;
+    }
+    if pos < code.len() {
+        escape_html_text(out, &code[pos..]);
+    }
+}
+
+fn token_class(token: CodeToken) -> &'static str {
+    match token {
+        CodeToken::Keyword => "tok-keyword",
+        CodeToken::String => "tok-string",
+        CodeToken::Comment => "tok-comment",
+        CodeToken::Number => "tok-number",
+        CodeToken::Function => "tok-function",
+        CodeToken::Type => "tok-type",
+    }
+}
+
+fn escape_html_text(out: &mut String, text: &str) {
+    for c in text.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            _ => out.push(c),
+        }
+    }
+}
+
 #[must_use]
 pub fn render_markdown(markdown: &str) -> String {
     let mut html = String::new();
-    pulldown_cmark::html::push_html(&mut html, events_with_heading_ids(markdown).into_iter());
+    let events = highlight_code_blocks(events_with_heading_ids(markdown));
+    pulldown_cmark::html::push_html(&mut html, events.into_iter());
 
     sanitize(&html)
 }
@@ -276,10 +369,12 @@ pub fn render_document(markdown: &str, base_dir: Option<&Path>) -> RenderedDocum
                 })
             }
             other => other,
-        });
+        })
+        .collect();
+    let events = highlight_code_blocks(events);
 
     let mut html = String::new();
-    pulldown_cmark::html::push_html(&mut html, events);
+    pulldown_cmark::html::push_html(&mut html, events.into_iter());
 
     let (html, local_images) = resolve_image_sources(&sanitize(&html), base_dir);
 
@@ -417,6 +512,23 @@ pub enum SpanKind {
     Link = 5,
     ListMarker = 6,
     Blockquote = 7,
+    CodeKeyword = 8,
+    CodeString = 9,
+    CodeComment = 10,
+    CodeNumber = 11,
+    CodeFunction = 12,
+    CodeType = 13,
+}
+
+fn code_token_span_kind(token: CodeToken) -> SpanKind {
+    match token {
+        CodeToken::Keyword => SpanKind::CodeKeyword,
+        CodeToken::String => SpanKind::CodeString,
+        CodeToken::Comment => SpanKind::CodeComment,
+        CodeToken::Number => SpanKind::CodeNumber,
+        CodeToken::Function => SpanKind::CodeFunction,
+        CodeToken::Type => SpanKind::CodeType,
+    }
 }
 
 /// A half-open `[start, end)` byte range of the source Markdown (UTF-8
@@ -426,6 +538,16 @@ pub struct HighlightSpan {
     pub start: u32,
     pub end: u32,
     pub kind: SpanKind,
+}
+
+/// Text inside a fenced code block with a recognized language, buffered
+/// across possibly several `Event::Text`s so multi-line constructs
+/// (block comments, multi-line strings) tokenize with full context — one
+/// [`code_highlight::highlight`] call per block, not per fragment.
+struct PendingCode {
+    language: String,
+    start: usize,
+    text: String,
 }
 
 /// Extracts editor highlight spans from the same grammar the preview
@@ -448,13 +570,46 @@ pub fn highlight_spans(markdown: &str) -> Vec<HighlightSpan> {
         }
     };
 
+    let mut pending_code: Option<PendingCode> = None;
+
     for (event, range) in Parser::new_ext(markdown, markdown_options()).into_offset_iter() {
         match event {
             Event::Start(Tag::Heading { .. }) => push(SpanKind::Heading, range),
             Event::Start(Tag::Emphasis) => push(SpanKind::Emphasis, range),
             Event::Start(Tag::Strong) => push(SpanKind::Strong, range),
             Event::Code(_) => push(SpanKind::CodeSpan, range),
-            Event::Start(Tag::CodeBlock(_)) => push(SpanKind::CodeBlock, range),
+            Event::Start(Tag::CodeBlock(kind)) => {
+                push(SpanKind::CodeBlock, range);
+                let language = match &kind {
+                    CodeBlockKind::Fenced(info) => {
+                        info.split_whitespace().next().unwrap_or("").to_owned()
+                    }
+                    CodeBlockKind::Indented => String::new(),
+                };
+                pending_code = Some(PendingCode {
+                    language,
+                    start: 0,
+                    text: String::new(),
+                });
+            }
+            Event::Text(text) if let Some(pending) = pending_code.as_mut() => {
+                if pending.text.is_empty() {
+                    pending.start = range.start;
+                }
+                pending.text.push_str(&text);
+            }
+            Event::End(TagEnd::CodeBlock) => {
+                if let Some(pending) = pending_code.take()
+                    && !pending.language.is_empty()
+                {
+                    for span in code_highlight::highlight(&pending.text, &pending.language) {
+                        push(
+                            code_token_span_kind(span.token),
+                            pending.start + span.start..pending.start + span.end,
+                        );
+                    }
+                }
+            }
             Event::Start(Tag::Link { .. } | Tag::Image { .. }) => {
                 push(SpanKind::Link, range);
             }
@@ -535,6 +690,56 @@ mod tests {
         assert!(html.contains("<table>"));
         assert!(html.contains("type=\"checkbox\""));
         assert!(html.contains("checked"));
+    }
+
+    #[test]
+    fn highlights_fenced_code_blocks_with_a_recognized_language() {
+        let html = render_markdown("```rust\nfn add(a: i32) -> i32 {\n    a + 1\n}\n```\n");
+
+        assert!(html.contains("<pre><code class=\"language-rust\">"));
+        assert!(html.contains("<span class=\"tok-keyword\">fn</span>"));
+        assert!(html.contains("<span class=\"tok-number\">1</span>"));
+    }
+
+    #[test]
+    fn leaves_fences_with_no_or_unrecognized_language_as_plain_code() {
+        let plain = render_markdown("```\nnaked fence\n```\n");
+        assert!(plain.contains("<pre><code>naked fence"));
+        assert!(!plain.contains("tok-"));
+
+        let unknown = render_markdown("```not-a-real-language\nx\n```\n");
+        assert!(unknown.contains("<pre><code class=\"language-not-a-real-language\">x"));
+        assert!(!unknown.contains("tok-"));
+    }
+
+    #[test]
+    fn mermaid_fences_pass_through_untokenized_for_the_client_side_renderer() {
+        let html = render_markdown("```mermaid\ngraph TD\n  A --> B\n```\n");
+
+        assert!(html.contains("<pre><code class=\"language-mermaid\">"));
+        assert!(html.contains("graph TD"));
+        assert!(!html.contains("tok-"));
+    }
+
+    #[test]
+    fn escapes_html_metacharacters_inside_highlighted_code() {
+        let html = render_markdown("```rust\nlet x: Vec<&str> = vec![\"a\", \"b\"];\n```\n");
+
+        assert!(!html.contains("Vec<&str>"));
+        assert!(html.contains("&lt;"));
+        assert!(html.contains("&amp;"));
+        assert!(html.contains("&gt;"));
+    }
+
+    #[test]
+    fn highlighting_survives_sanitization_and_local_image_resolution() {
+        let rendered = render_document(
+            "```js\nconst x = 1; // comment\n```\n",
+            Some(Path::new("/docs")),
+        );
+
+        assert!(rendered.html().contains("<span class=\"tok-keyword\">const</span>"));
+        assert!(rendered.html().contains("tok-comment"));
     }
 
     #[test]
@@ -777,6 +982,49 @@ mod tests {
         assert_eq!(of(SpanKind::Blockquote), ["> quoted\n"]);
         assert_eq!(of(SpanKind::ListMarker), ["-", "1."]);
         assert_eq!(of(SpanKind::Link), ["[link](https://example.com)"]);
+    }
+
+    #[test]
+    fn highlight_spans_tokenize_fenced_code_with_a_recognized_language() {
+        let markdown = "```rust\nfn add(a: i32) -> i32 {\n    a + 41\n}\n```\n";
+        let spans = highlight_spans(markdown);
+        let slice = |span: &HighlightSpan| &markdown[span.start as usize..span.end as usize];
+
+        let keywords: Vec<_> = spans
+            .iter()
+            .filter(|s| s.kind == SpanKind::CodeKeyword)
+            .map(slice)
+            .collect();
+        let numbers: Vec<_> = spans
+            .iter()
+            .filter(|s| s.kind == SpanKind::CodeNumber)
+            .map(slice)
+            .collect();
+
+        assert!(keywords.contains(&"fn"));
+        assert_eq!(numbers, ["41"]);
+        // Token spans sit inside the code block's own outer span.
+        let block = spans
+            .iter()
+            .find(|s| s.kind == SpanKind::CodeBlock)
+            .expect("code block span");
+        for span in &spans {
+            if span.kind != SpanKind::CodeBlock {
+                assert!(span.start >= block.start && span.end <= block.end);
+            }
+        }
+    }
+
+    #[test]
+    fn highlight_spans_skip_tokenizing_fences_without_a_language() {
+        let markdown = "```\nplain fence\n```\n";
+        let spans = highlight_spans(markdown);
+
+        assert_eq!(spans, [HighlightSpan {
+            start: 0,
+            end: u32::try_from(markdown.trim_end().len()).unwrap(),
+            kind: SpanKind::CodeBlock,
+        }]);
     }
 
     #[test]

@@ -9,6 +9,7 @@ enum PreviewPage {
     /// the scheme handler after a workspace-containment check.
     static let scheme = "markive-asset"
     static let pageURL = URL(string: "\(scheme)://workspace/__preview__.html")!
+    static let mermaidScriptURL = URL(string: "\(scheme)://workspace/__mermaid__.js")!
 
     static func page(body: String, title: String) -> String {
         """
@@ -18,6 +19,8 @@ enum PreviewPage {
         <meta charset="utf-8">
         <title>\(escape(title))</title>
         <style>\(css)</style>
+        <script src="\(mermaidScriptURL)"></script>
+        <script>\(mermaidBootstrap)</script>
         </head>
         <body><article id="content" class="markdown-body">
         \(body)
@@ -27,13 +30,105 @@ enum PreviewPage {
     }
 
     /// JS that swaps the rendered body in place — no navigation, so the
-    /// scroll position survives live re-renders.
+    /// scroll position survives live re-renders — then re-renders any
+    /// Mermaid fences the new body introduced or changed.
     static func contentSwapScript(body: String) -> String? {
         guard let json = try? String(data: JSONEncoder().encode(body), encoding: .utf8) else {
             return nil
         }
-        return "document.getElementById('content').innerHTML = \(json);"
+        return """
+        document.getElementById('content').innerHTML = \(json);
+        if (window.__markiveRenderMermaid) { window.__markiveRenderMermaid(); }
+        """
     }
+
+    /// The vendored Mermaid bundle (Resources/vendor/mermaid.min.js),
+    /// loaded once from the app bundle and served over the asset scheme
+    /// at `mermaidScriptURL` — never fetched from the network, matching
+    /// the WebView's all-schemes-blocked-except-ours posture. Empty
+    /// (diagrams simply don't render, fences stay plain code) if the
+    /// resource is missing, which should only happen in a broken build.
+    static let mermaidScript: String = {
+        guard let url = Bundle.main.url(forResource: "mermaid.min", withExtension: "js"),
+              let script = try? String(contentsOf: url, encoding: .utf8)
+        else {
+            NSLog("MarkivePreview: mermaid.min.js not found in the app bundle")
+            return ""
+        }
+        return script
+    }()
+
+    /// App-authored glue between the vendored library and our fenced code
+    /// blocks: initializes Mermaid once per theme, finds `code.language-
+    /// mermaid` blocks, and swaps each into its rendered SVG — or, on a
+    /// parse error, leaves the source visible and adds an error banner.
+    /// `securityLevel: 'strict'` keeps Mermaid's own DOMPurify-backed
+    /// sanitization on for diagram labels and links; never loosen it.
+    /// Exposed as `window.__markiveRenderMermaid` so both the initial
+    /// load and later content swaps can re-run it, and re-run again on a
+    /// light/dark switch so diagram themes follow the app.
+    static let mermaidBootstrap = """
+    (function () {
+        function currentTheme() {
+            return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
+                ? 'dark' : 'default';
+        }
+        var renderId = 0;
+        async function renderAll() {
+            if (!window.mermaid) return;
+            window.mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme: currentTheme() });
+            var blocks = document.querySelectorAll('pre > code.language-mermaid');
+            for (var i = 0; i < blocks.length; i++) {
+                var code = blocks[i];
+                var pre = code.parentElement;
+                var container = pre.parentElement.classList.contains('mermaid-block')
+                    ? pre.parentElement
+                    : wrapBlock(pre);
+                var diagram = container.querySelector('.mermaid-diagram');
+                var error = container.querySelector('.mermaid-error');
+                var id = 'markive-mermaid-' + (renderId++);
+                try {
+                    var result = await window.mermaid.render(id, code.textContent);
+                    if (!diagram) {
+                        diagram = document.createElement('div');
+                        diagram.className = 'mermaid-diagram';
+                        container.appendChild(diagram);
+                    }
+                    diagram.innerHTML = result.svg;
+                    if (error) error.remove();
+                    pre.hidden = true;
+                } catch (err) {
+                    // On a parse error Mermaid leaves its offscreen render
+                    // sandbox (id "d" + our id) attached to <body> instead
+                    // of cleaning it up itself.
+                    var leftover = document.getElementById('d' + id);
+                    if (leftover) leftover.remove();
+                    if (diagram) diagram.remove();
+                    if (!error) {
+                        error = document.createElement('div');
+                        error.className = 'mermaid-error';
+                        container.insertBefore(error, pre);
+                    }
+                    error.textContent = 'Couldn\\u2019t render this diagram: '
+                        + (err && err.message ? err.message : String(err));
+                    pre.hidden = false;
+                }
+            }
+        }
+        function wrapBlock(pre) {
+            var wrap = document.createElement('div');
+            wrap.className = 'mermaid-block';
+            pre.parentElement.insertBefore(wrap, pre);
+            wrap.appendChild(pre);
+            return wrap;
+        }
+        window.__markiveRenderMermaid = renderAll;
+        document.addEventListener('DOMContentLoaded', renderAll);
+        if (window.matchMedia) {
+            window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', renderAll);
+        }
+    })();
+    """
 
     static func escape(_ text: String) -> String {
         text.replacingOccurrences(of: "&", with: "&amp;")
@@ -74,19 +169,35 @@ enum PreviewPage {
     static let css = """
     :root {
         color-scheme: light dark;
-        --fg: #1f2328;
-        --fg-muted: #59636e;
-        --border: #d1d9e0;
-        --code-bg: #f6f8fa;
-        --accent: #0969da;
+        --fg: #1d1d1f;
+        --fg-muted: #6e6e73;
+        --border: rgba(0, 0, 0, .1);
+        --code-bg: rgba(0, 0, 0, .05);
+        --accent: #007aff;
+        --tok-keyword: #ff2d55;
+        --tok-string: #34c759;
+        --tok-comment: #6e6e73;
+        --tok-number: #30b0c7;
+        --tok-function: #5856d6;
+        --tok-type: #a2845e;
+        --danger: #ff3b30;
+        --danger-bg: rgba(255, 59, 48, .1);
     }
     @media (prefers-color-scheme: dark) {
         :root {
-            --fg: #f0f6fc;
-            --fg-muted: #9198a1;
-            --border: #3d444d;
-            --code-bg: #151b23;
-            --accent: #4493f8;
+            --fg: #f5f5f7;
+            --fg-muted: #98989d;
+            --border: rgba(255, 255, 255, .145);
+            --code-bg: rgba(255, 255, 255, .08);
+            --accent: #0a84ff;
+            --tok-keyword: #ff375f;
+            --tok-string: #30d158;
+            --tok-comment: #98989d;
+            --tok-number: #40cbe0;
+            --tok-function: #5e5ce6;
+            --tok-type: #ac8e68;
+            --danger: #ff453a;
+            --danger-bg: rgba(255, 69, 58, .15);
         }
     }
     * { box-sizing: border-box; }
@@ -117,6 +228,24 @@ enum PreviewPage {
     code { padding: .2em .4em; }
     pre { padding: 1em; overflow-x: auto; }
     pre code { padding: 0; background: none; }
+    .tok-keyword { color: var(--tok-keyword); }
+    .tok-string { color: var(--tok-string); }
+    .tok-comment { color: var(--tok-comment); }
+    .tok-number { color: var(--tok-number); }
+    .tok-function { color: var(--tok-function); }
+    .tok-type { color: var(--tok-type); }
+    .mermaid-block { margin: 0 0 1em; }
+    .mermaid-block pre { margin: 0 0 .5em; }
+    .mermaid-diagram { display: flex; justify-content: center; overflow-x: auto; }
+    .mermaid-diagram svg { max-width: 100%; height: auto; }
+    .mermaid-error {
+        margin: 0 0 .5em;
+        padding: .6em 1em;
+        border-radius: 6px;
+        background: var(--danger-bg);
+        color: var(--danger);
+        font-size: .9em;
+    }
     blockquote {
         padding: 0 1em;
         color: var(--fg-muted);

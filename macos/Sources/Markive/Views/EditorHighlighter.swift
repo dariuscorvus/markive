@@ -245,6 +245,12 @@ final class EditorHighlighter {
         case .link: [.foregroundColor: .linkColor]
         case .listMarker: [.foregroundColor: .controlAccentColor]
         case .blockquote: [.foregroundColor: .secondaryLabelColor]
+        case .codeKeyword: [.foregroundColor: .systemPink]
+        case .codeString: [.foregroundColor: .systemGreen]
+        case .codeComment: [.foregroundColor: .secondaryLabelColor]
+        case .codeNumber: [.foregroundColor: .systemTeal]
+        case .codeFunction: [.foregroundColor: .systemIndigo]
+        case .codeType: [.foregroundColor: .systemBrown]
         }
     }
 }

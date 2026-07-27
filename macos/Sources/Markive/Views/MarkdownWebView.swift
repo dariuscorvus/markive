@@ -144,6 +144,11 @@ private final class AssetSchemeHandler: NSObject, WKURLSchemeHandler {
             guard let html = page() else { return fail(task) }
             return respond(task, url: url, data: Data(html.utf8), mimeType: "text/html")
         }
+        if url == PreviewPage.mermaidScriptURL {
+            return respond(
+                task, url: url, data: Data(PreviewPage.mermaidScript.utf8), mimeType: "text/javascript"
+            )
+        }
         guard let root = root(),
               let fileURL = PreviewPage.containedFileURL(requestPath: url.path, workspaceRoot: root),
               let data = try? Data(contentsOf: fileURL) else {
