@@ -4,6 +4,7 @@ import Observation
 enum SidebarItem: Hashable {
     case allDocuments
     case recent
+    case favorites
     case workspaceRoot
     case folder(String)
     case savedSearch(SavedSearch)
@@ -158,6 +159,7 @@ final class WorkspaceModel {
         case nil: workspaceName ?? "Markive"
         case .allDocuments: "All Documents"
         case .recent: "Recent"
+        case .favorites: "Favorites"
         case .workspaceRoot: workspaceName ?? "Workspace"
         case .folder(let path): path.components(separatedBy: "/").last ?? path
         case .savedSearch(let search): search.rawValue
@@ -174,6 +176,8 @@ final class WorkspaceModel {
             return all
         case .recent:
             return Array(all.sorted { $0.modifiedAt > $1.modifiedAt }.prefix(10))
+        case .favorites:
+            return store.favoriteDocuments
         case .folder(let path):
             return all.filter { $0.relativeFolder == path || $0.relativeFolder.hasPrefix(path + "/") }
         case .savedSearch(.modifiedToday):
@@ -274,6 +278,11 @@ final class WorkspaceModel {
 
     func saveSelectedDocument() {
         openedDocument?.document?.save(nil)
+    }
+
+    func toggleFavoriteForSelection() {
+        guard let item = selectedDocument else { return }
+        store.toggleFavorite(item)
     }
 
     func open(_ document: DocumentItem) {

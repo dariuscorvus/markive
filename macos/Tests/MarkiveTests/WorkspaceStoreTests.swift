@@ -369,6 +369,50 @@ private func isolatedDefaults() -> UserDefaults {
     }
 }
 
+@Suite struct FavoritesTests {
+    @MainActor
+    @Test func favoritesPersistPerWorkspace() async throws {
+        let fixture = try FixtureWorkspace(files: [("a.md", "a"), ("b.md", "b")])
+        defer { fixture.tearDown() }
+        let defaults = isolatedDefaults()
+
+        let store = WorkspaceStore(defaults: defaults)
+        await store.openWorkspace(at: fixture.root)
+        let a = try #require(store.documents.first { $0.title == "a" })
+        store.toggleFavorite(a)
+        #expect(store.isFavorite(a))
+        #expect(store.favoriteDocuments.map(\.title) == ["a"])
+
+        // A fresh store over the same defaults and root sees the favorite.
+        let second = WorkspaceStore(defaults: defaults)
+        await second.openWorkspace(at: fixture.root)
+        #expect(second.favoriteDocuments.map(\.title) == ["a"])
+
+        second.toggleFavorite(try #require(second.documents.first { $0.title == "a" }))
+        #expect(second.favoriteDocuments.isEmpty)
+    }
+
+    @MainActor
+    @Test func renameCarriesFavoriteAndTrashDropsIt() async throws {
+        let fixture = try FixtureWorkspace(files: [("a.md", "a")])
+        defer { fixture.tearDown() }
+        let store = WorkspaceStore(defaults: isolatedDefaults())
+        await store.openWorkspace(at: fixture.root)
+        let a = try #require(store.documents.first)
+        store.toggleFavorite(a)
+
+        let renamed = try store.rename(a, to: "renamed")
+        #expect(store.isFavorite(renamed))
+        #expect(store.favoriteDocuments.map(\.title) == ["renamed"])
+
+        let trashedURL = try store.trash(renamed)
+        #expect(store.favoriteDocuments.isEmpty)
+        if let trashedURL {
+            try? FileManager.default.removeItem(at: trashedURL)
+        }
+    }
+}
+
 @Suite struct RecentsTests {
     @MainActor
     @Test func openRecordsRecentsMostRecentFirstAndDeduped() async throws {

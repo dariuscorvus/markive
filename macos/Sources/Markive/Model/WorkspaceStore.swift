@@ -17,6 +17,11 @@ final class WorkspaceStore {
     /// Open NSDocuments, shared across windows.
     let session = DocumentSession()
 
+    /// Favorites are app data, not file data: relative paths per workspace,
+    /// persisted in defaults. Paths survive safe-saves (inodes don't); our own
+    /// renames carry the favorite over, external renames lose it.
+    private(set) var favoritePaths: Set<String> = []
+
     private let defaults: UserDefaults
     private var securityScopedRoot: URL?
     private var scanGeneration = 0
@@ -41,6 +46,7 @@ final class WorkspaceStore {
         let root = url.standardizedFileURL.resolvingSymlinksInPath()
         rootURL = root
         rootName = root.lastPathComponent
+        favoritePaths = Set((defaults.array(forKey: Self.favoritesKey(for: root)) as? [String]) ?? [])
         isLoading = true
         scanGeneration += 1
         let generation = scanGeneration
@@ -72,18 +78,21 @@ final class WorkspaceStore {
         let snapshot = await Task.detached(priority: .utility) {
             Self.scan(root: rootURL, rootName: rootName)
         }.value
-        guard generation == scanGeneration else { return }
-        folderTree = snapshot.folders
-        documents = Self.reconcileIdentities(old: documents, new: snapshot.documents)
-
-        // Point open documents at their current path (external rename), then
-        // let them reconcile content with the disk.
-        for item in documents {
-            if let document = session.openDocument(id: item.id),
-               document.fileURL?.path != item.url.path {
-                session.updateURL(id: item.id, to: item.url)
+        if generation == scanGeneration {
+            folderTree = snapshot.folders
+            documents = Self.reconcileIdentities(old: documents, new: snapshot.documents)
+            // Point open documents at their current path (external rename).
+            for item in documents {
+                if let document = session.openDocument(id: item.id),
+                   document.fileURL?.path != item.url.path {
+                    session.updateURL(id: item.id, to: item.url)
+                }
             }
         }
+        // Outside the generation guard: reconciling open buffers is idempotent,
+        // and a rescan discarded as stale (a watcher-triggered rescan racing a
+        // manual one) must not skip it — the winner may already have run before
+        // the change this rescan was reacting to.
         session.checkExternalChanges()
     }
 
@@ -113,6 +122,32 @@ final class WorkspaceStore {
         didAttemptRestore = true
         guard let url = recentWorkspaces.first else { return }
         await openWorkspace(at: url)
+    }
+
+    // MARK: - Favorites
+
+    nonisolated static func favoritesKey(for root: URL) -> String {
+        "favorites:\(root.canonicalPath)"
+    }
+
+    var favoriteDocuments: [DocumentItem] {
+        documents.filter { favoritePaths.contains($0.relativePath) }
+    }
+
+    func isFavorite(_ item: DocumentItem) -> Bool {
+        favoritePaths.contains(item.relativePath)
+    }
+
+    func toggleFavorite(_ item: DocumentItem) {
+        if favoritePaths.remove(item.relativePath) == nil {
+            favoritePaths.insert(item.relativePath)
+        }
+        persistFavorites()
+    }
+
+    private func persistFavorites() {
+        guard let rootURL else { return }
+        defaults.set(favoritePaths.sorted(), forKey: Self.favoritesKey(for: rootURL))
     }
 
     // MARK: - Write operations
@@ -177,6 +212,10 @@ final class WorkspaceStore {
         if let index = documents.firstIndex(where: { $0.id == item.id }) {
             documents[index] = updated
         }
+        if favoritePaths.remove(item.relativePath) != nil {
+            favoritePaths.insert(updated.relativePath)
+            persistFavorites()
+        }
         return updated
     }
 
@@ -187,6 +226,9 @@ final class WorkspaceStore {
         var trashedURL: NSURL?
         try FileManager.default.trashItem(at: item.url, resultingItemURL: &trashedURL)
         documents.removeAll { $0.id == item.id }
+        if favoritePaths.remove(item.relativePath) != nil {
+            persistFavorites()
+        }
         return trashedURL as URL?
     }
 
