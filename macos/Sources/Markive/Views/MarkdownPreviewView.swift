@@ -22,6 +22,30 @@ struct MarkdownPreviewView: View {
     @State private var rendered: (id: FileID, title: String, html: String)?
     @State private var renderTask: Task<Void, Never>?
 
+    /// `document.id` updates the instant selection changes, but
+    /// `openDocument` — the actual `MarkdownDocument` whose text gets
+    /// rendered — is swapped in by `WorkspaceModel.loadSelectedDocument()`,
+    /// called from `DocumentDetailView`'s `.onChange(of: selectedDocumentID)`.
+    /// `onChange` fires as a reaction *after* the view already rendered once
+    /// with the new `document.id` paired with the still-old `openDocument`,
+    /// so there is one frame where they don't match. Keying `.task(id:)` on
+    /// `document.id` alone means that frame's stale-paired render is the
+    /// only one that ever runs — `openDocument` catching up next frame
+    /// doesn't change `document.id` again, so nothing re-triggers, and the
+    /// preview keeps showing the previous document's text under the new
+    /// document's identity indefinitely. Including the concrete
+    /// `openDocument` instance's identity in the task key closes that gap:
+    /// it re-fires again once the correct document lands, even though
+    /// `document.id` didn't change a second time.
+    private struct RenderKey: Equatable {
+        var documentID: FileID
+        var openDocumentIdentity: ObjectIdentifier
+    }
+
+    private var renderKey: RenderKey {
+        RenderKey(documentID: document.id, openDocumentIdentity: ObjectIdentifier(openDocument))
+    }
+
     var body: some View {
         Group {
             if let rendered {
@@ -38,7 +62,7 @@ struct MarkdownPreviewView: View {
                 ProgressView()
             }
         }
-        .task(id: document.id) {
+        .task(id: renderKey) {
             let html = await render(openDocument.buffer.text)
             // Cancellation is cooperative: switching documents again while
             // this render is in flight cancels this task, but render()
