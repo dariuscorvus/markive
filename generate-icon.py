@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Generate the Markive app icons from the vector master.
+"""Generate the native macOS app icon from the vector master.
 
 `markive-icon.svg` is the source of truth. This script rasterizes it to
-a 1024px straight-alpha PNG and hands that to `tauri icon`, which emits
-the full platform set into src-tauri/icons (icns, ico, and the PNG
-ladder).
+a 1024px straight-alpha PNG and builds an .iconset from it with
+`iconutil`, emitting macos/Resources/AppIcon.icns.
 
 Rasterizing uses QuickLook (qlmanage, WebKit-backed) so the SVG's
 gradients render faithfully. QuickLook can't emit an alpha channel — it
@@ -85,6 +84,23 @@ def rasterize_rgba(svg_text, size, out_dir):
     return Image.merge("RGBA", (unpremult(br), unpremult(bg), unpremult(bb), alpha))
 
 
+def build_icns(master, out_icns):
+    """Builds an .icns from `master` (a 1024x1024 RGBA image) via iconutil,
+    macOS's own iconset compiler — no third-party tooling required."""
+    with tempfile.TemporaryDirectory() as tmp:
+        iconset = os.path.join(tmp, "AppIcon.iconset")
+        os.makedirs(iconset)
+        for size in (16, 32, 128, 256, 512):
+            master.resize((size, size), Image.LANCZOS).save(
+                os.path.join(iconset, f"icon_{size}x{size}.png")
+            )
+            master.resize((size * 2, size * 2), Image.LANCZOS).save(
+                os.path.join(iconset, f"icon_{size}x{size}@2x.png")
+            )
+        os.makedirs(os.path.dirname(out_icns), exist_ok=True)
+        subprocess.run(["iconutil", "-c", "icns", iconset, "-o", out_icns], check=True)
+
+
 def main():
     if not os.path.exists(SVG_PATH):
         raise SystemExit(f"Missing vector master: {SVG_PATH}")
@@ -95,13 +111,10 @@ def main():
         if master.size != (1024, 1024):
             master = master.resize((1024, 1024), Image.LANCZOS)
 
-        source = os.path.join(tmp, "markive-icon-1024.png")
-        master.save(source)
-        subprocess.run(
-            ["npm", "run", "tauri", "icon", source], check=True, cwd=HERE
-        )
+        out_icns = os.path.join(HERE, "macos", "Resources", "AppIcon.icns")
+        build_icns(master, out_icns)
 
-    print("Regenerated src-tauri/icons from markive-icon.svg")
+    print(f"Regenerated {out_icns} from markive-icon.svg")
 
 
 if __name__ == "__main__":

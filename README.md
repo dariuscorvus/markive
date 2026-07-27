@@ -7,28 +7,22 @@
 > macOS opens PDFs in Preview.
 > Markdown deserves the same: double-click, read, done.
 
-A native macOS Markdown viewer and editor. Open a `.md` from Finder and it renders. Hit ⌘2 and it's an editor. Open a folder and it becomes a root — no project setup, no workspace file, no Electron.
-
-## Status
-
-Active development happens in the native SwiftUI app in [`macos/`](macos/). The Tauri app below is feature-frozen: it keeps working, bug fixes only. The parser core in `crates/markive-core` carries over to the native app.
+A native macOS Markdown viewer and editor. Open a `.md` from Finder and it renders. Switch to the editor and it's an editor. Open a folder and it becomes a workspace root — no project setup, no workspace file, no Electron.
 
 ## What it is
 
-- **Viewer first.** Rendered, Source, and Split views (⌘1/⌘2/⌘3). GitHub-style heading anchors, tables, task lists, fenced code. Local images and relative links resolve — including images written as raw HTML, the way READMEs do it.
-- **Editor when you need it.** CodeMirror with Markdown highlighting, multi-cursor (⌘-click), undo history, live re-render in Split mode.
-- **Folder explorer.** Open a folder as a root and browse it in a sidebar — lazy tree, Markdown-focused (folders and `.md` files only), hidden files toggle, unsaved-changes indicator, and safe against symlink loops. Create, rename, and drag-and-drop-move files and folders from the sidebar; delete goes to the system trash. Open tabs follow along when their file is renamed or moved.
-- **Tabs.** Open several documents at once, each keeping its own content, path, view mode, selection, and dirty state. Reorder by dragging, close individually, and picking an already-open file focuses its tab instead of duplicating it.
-- **Quick Open.** ⌘P fuzzy-searches every file under the open folder root — Markdown ranks first, hidden files follow the explorer's toggle, and results filter as you type.
-- **Find in Folder.** ⇧⌘F full-text-searches every Markdown file under the root, streaming results as they're found. Case, whole-word, and regex modes; selecting a result opens the file with the match selected.
-- **Safe by default.** Rendered HTML is sanitized; the webview never navigates. External links open in your browser, local `.md` links open in Markive, everything else is blocked. Saves are atomic — a failed write leaves the original untouched.
-- **Lossless quit.** ⌘Q never nags. The session — window, document, view mode, scroll, and unsaved edits — restores on the next launch, like TextEdit.
+- **Viewer first.** Editor, Preview, and Editor-and-Preview split (⌘1/⌘2/⌘3). GitHub-style heading anchors, tables, task lists. Syntax-highlighted fenced code and rendered Mermaid diagrams, both styled to match the system's Liquid Glass material. Local images and relative links resolve — including images written as raw HTML, the way READMEs do it.
+- **Editor when you need it.** A TextKit 2 text view with live Markdown syntax highlighting and list continuation/indent.
+- **Workspace sidebar.** Open a folder as a root and browse it — All Documents, Recent, Favorites, and the folder tree. Rename, move to Trash, drag a document out to Finder, or use its context menu (Copy Path, Show in Finder).
+- **Quick Open.** ⌘P fuzzy-searches every document under the open workspace.
+- **History.** ⌘[ / ⌘] step back and forward through recently viewed documents; ⌥⌘↓ / ⌥⌘↑ move to the next or previous document in the list.
+- **Safe by default.** Rendered HTML is sanitized; the preview's WKWebView blocks every network scheme and never navigates. External links open in your browser, local `.md` links open in Markive.
 - **Aware of the disk.** External edits reload clean documents automatically; conflicting edits raise a banner instead of silently losing either side.
-- **Native.** Real menu bar, light/dark/system appearance, Finder file associations, drag & drop, clipboard paste (text or copied files).
+- **Native.** Real menu bar, light/dark/system appearance, Finder file associations, drag & drop, Share.
 
 ## Requirements
 
-macOS 10.13+ on Apple Silicon or Intel — the bundle is universal.
+macOS 26 on Apple Silicon or Intel — the bundle is universal.
 
 ## Install
 
@@ -43,10 +37,10 @@ xattr -dr com.apple.quarantine /Applications/Markive.app
 ### Build from source
 
 ```bash
-npm install
-npm run tauri build -- --target universal-apple-darwin
-ditto target/universal-apple-darwin/release/bundle/macos/Markive.app /Applications/Markive.app
+macos/run.sh
 ```
+
+Builds `markive-ffi` (the Rust core), then the SwiftUI app, and launches it. See [`macos/`](macos/) for the Xcode/release build path.
 
 ## Command line
 
@@ -54,8 +48,7 @@ Settings (⌘,) → **Install Command Line Tool** puts `markive` on your PATH. T
 
 ```
 markive notes.md              # open a file in the app
-markive notes/                # open a folder as a root
-markive -                     # read a document from stdin
+markive notes/                # open a folder as a workspace
 markive render notes.md       # print sanitized HTML to stdout
 echo '# hi' | markive render  # works in pipes
 markive --version
@@ -67,30 +60,25 @@ markive --version
 
 | | |
 |---|---|
-| ⌘O / ⇧⌘O / ⌘N / ⌘S / ⇧⌘S | Open, Open Folder, New, Save, Save As |
-| ⌘W / ⇧⌘W | Close Tab, Close Window |
-| ⌘P | Quick Open (needs an open folder) |
-| ⇧⌘F | Find in Folder (needs an open folder) |
-| ⌘1 / ⌘2 / ⌘3 | Rendered, Source, Split |
-| ⌘E | Cycle view mode |
-| ⌘F, ⌘G / ⇧⌘G | Find, next / previous match |
-| ⌘V | Paste clipboard as document (outside the editor) |
-| ⌘, | Settings — appearance, prose width, editor font size, line wrap |
+| ⌘N / ⇧⌘N / ⌘O / ⌘P / ⌘S | New Document, New Window, Open Workspace, Quick Open, Save |
+| ⌘1 / ⌘2 / ⌘3 | Editor, Preview, Editor and Preview |
+| ⌘[ / ⌘] | Back, Forward |
+| ⌥⌘↓ / ⌥⌘↑ | Next Document, Previous Document |
+| ⌥⌘I | Toggle Inspector |
 
 ## Architecture
 
-A Rust workspace with the logic where it can be tested and the shell kept thin:
+A Rust workspace with the parsing/rendering logic where it can be tested, and a native SwiftUI shell:
 
-- `crates/markive-core` — parsing (pulldown-cmark), sanitizing (ammonia), path resolution, atomic saves. Pure functions, no Tauri types, `#![forbid(unsafe_code)]`.
-- `src-tauri` — the Tauri 2 shell: commands, window, menus, file watching, single-instance forwarding, CLI entry point.
-- `src` — Svelte 5 frontend, one window.
+- `crates/markive-core` — parsing (pulldown-cmark), syntax highlighting (syntect), sanitizing (ammonia), path resolution, atomic saves. Pure functions, no platform types, `#![forbid(unsafe_code)]`.
+- `crates/markive-ffi` — a C ABI over `markive-core` for the Swift app.
+- `macos/` — the SwiftUI app: windows, sidebar, editor, preview, commands, file watching, CLI entry point.
 
 Rendering large documents is held to a measured budget: the test suite generates 1, 5, and 20 MB fixtures, records timings, and bounds memory across repeated renders.
 
 ```bash
-cargo test --workspace   # core, CLI, lifecycle, perf
-npm test                 # frontend logic
-npm run tauri dev
+cargo test --workspace          # markive-core, markive-ffi
+cd macos && swift test          # SwiftUI app
 ```
 
 MIT — see [LICENSE](LICENSE).
