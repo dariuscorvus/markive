@@ -403,6 +403,96 @@ fn normalize_lexically(path: &Path) -> PathBuf {
     normalized
 }
 
+/// What a highlight span marks. The discriminants are the FFI contract —
+/// `crates/markive-ffi` exposes them as a `uint8_t` and the Swift editor
+/// maps them back; never renumber, only append.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum SpanKind {
+    Heading = 0,
+    Emphasis = 1,
+    Strong = 2,
+    CodeSpan = 3,
+    CodeBlock = 4,
+    Link = 5,
+    ListMarker = 6,
+    Blockquote = 7,
+}
+
+/// A half-open `[start, end)` byte range of the source Markdown (UTF-8
+/// offsets) to highlight as `kind`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HighlightSpan {
+    pub start: u32,
+    pub end: u32,
+    pub kind: SpanKind,
+}
+
+/// Extracts editor highlight spans from the same grammar the preview
+/// renders — pulldown-cmark with [`markdown_options`] — so what looks
+/// like a heading in the editor is exactly what renders as one.
+///
+/// Spans come out in event order: an enclosing construct (blockquote,
+/// list item) precedes what it contains, so a consumer applying them
+/// sequentially lets the innermost construct win on overlap.
+#[must_use]
+pub fn highlight_spans(markdown: &str) -> Vec<HighlightSpan> {
+    let mut spans = Vec::new();
+    let mut push = |kind: SpanKind, range: std::ops::Range<usize>| {
+        // u32 covers 4 GB of Markdown; anything larger has no business
+        // being syntax-highlighted (the editor opts out far earlier).
+        if let (Ok(start), Ok(end)) = (u32::try_from(range.start), u32::try_from(range.end))
+            && start < end
+        {
+            spans.push(HighlightSpan { start, end, kind });
+        }
+    };
+
+    for (event, range) in Parser::new_ext(markdown, markdown_options()).into_offset_iter() {
+        match event {
+            Event::Start(Tag::Heading { .. }) => push(SpanKind::Heading, range),
+            Event::Start(Tag::Emphasis) => push(SpanKind::Emphasis, range),
+            Event::Start(Tag::Strong) => push(SpanKind::Strong, range),
+            Event::Code(_) => push(SpanKind::CodeSpan, range),
+            Event::Start(Tag::CodeBlock(_)) => push(SpanKind::CodeBlock, range),
+            Event::Start(Tag::Link { .. } | Tag::Image { .. }) => {
+                push(SpanKind::Link, range);
+            }
+            Event::Start(Tag::BlockQuote(_)) => push(SpanKind::Blockquote, range),
+            // An item's range starts at its marker; measure the marker
+            // from the source since the parser has no marker event.
+            Event::Start(Tag::Item) => {
+                let marker_len = list_marker_len(&markdown[range.clone()]);
+                if marker_len > 0 {
+                    push(SpanKind::ListMarker, range.start..range.start + marker_len);
+                }
+            }
+            Event::TaskListMarker(_) => push(SpanKind::ListMarker, range),
+            _ => {}
+        }
+    }
+
+    spans
+}
+
+/// Length in bytes of the list marker at the start of an item's source:
+/// `-`, `+`, `*`, or digits followed by `.` or `)`. Zero when the item
+/// text doesn't start with a recognizable marker.
+fn list_marker_len(item: &str) -> usize {
+    let bytes = item.as_bytes();
+    match bytes.first() {
+        Some(b'-' | b'+' | b'*') => 1,
+        Some(b'0'..=b'9') => {
+            let digits = bytes.iter().take_while(|b| b.is_ascii_digit()).count();
+            match bytes.get(digits) {
+                Some(b'.' | b')') => digits + 1,
+                _ => 0,
+            }
+        }
+        _ => 0,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -664,6 +754,65 @@ mod tests {
         assert!(!html.contains("<img"));
         assert!(!html.contains("javascript:"));
         assert!(html.contains("&lt;img"));
+    }
+
+    #[test]
+    fn highlight_spans_cover_the_core_constructs() {
+        let markdown = "# Title\n\nSome *em* and **strong** and `code`.\n\n> quoted\n\n- item\n1. numbered\n\n```\nblock\n```\n\n[link](https://example.com)\n";
+        let spans = highlight_spans(markdown);
+        let slice = |span: &HighlightSpan| &markdown[span.start as usize..span.end as usize];
+
+        let of = |kind: SpanKind| {
+            spans
+                .iter()
+                .filter(|s| s.kind == kind)
+                .map(slice)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(of(SpanKind::Heading), ["# Title\n"]);
+        assert_eq!(of(SpanKind::Emphasis), ["*em*"]);
+        assert_eq!(of(SpanKind::Strong), ["**strong**"]);
+        assert_eq!(of(SpanKind::CodeSpan), ["`code`"]);
+        assert_eq!(of(SpanKind::CodeBlock), ["```\nblock\n```"]);
+        assert_eq!(of(SpanKind::Blockquote), ["> quoted\n"]);
+        assert_eq!(of(SpanKind::ListMarker), ["-", "1."]);
+        assert_eq!(of(SpanKind::Link), ["[link](https://example.com)"]);
+    }
+
+    #[test]
+    fn highlight_span_offsets_are_utf8_bytes() {
+        // "é" is 2 bytes; the strong span must land after them correctly.
+        let markdown = "héllo **wörld**";
+        let spans = highlight_spans(markdown);
+        let strong = spans
+            .iter()
+            .find(|s| s.kind == SpanKind::Strong)
+            .expect("strong span");
+        assert_eq!(
+            &markdown[strong.start as usize..strong.end as usize],
+            "**wörld**"
+        );
+    }
+
+    #[test]
+    fn task_list_markers_highlight_the_checkbox() {
+        let markdown = "- [x] done\n- [ ] open\n";
+        let spans = highlight_spans(markdown);
+        let markers: Vec<_> = spans
+            .iter()
+            .filter(|s| s.kind == SpanKind::ListMarker)
+            .map(|s| &markdown[s.start as usize..s.end as usize])
+            .collect();
+        assert_eq!(markers, ["-", "[x]", "-", "[ ]"]);
+    }
+
+    #[test]
+    fn outer_constructs_precede_inner_on_overlap() {
+        let markdown = "> a *quoted emphasis*\n";
+        let spans = highlight_spans(markdown);
+        let quote = spans.iter().position(|s| s.kind == SpanKind::Blockquote);
+        let em = spans.iter().position(|s| s.kind == SpanKind::Emphasis);
+        assert!(quote.unwrap() < em.unwrap());
     }
 
     #[test]
