@@ -51,6 +51,14 @@ import Testing
         return nil
     }
 
+    /// Small documents must be colored the moment attach returns — no
+    /// async hop, so an opened document never appears uncolored first.
+    @Test func smallDocumentHighlightsSynchronouslyOnAttach() {
+        let (_, textView, highlighter, scrollView) = makeEditor(text: "# Heading\n")
+        _ = highlighter; _ = scrollView
+        #expect(foregroundColor(in: textView, at: 0) == .systemBlue)
+    }
+
     @Test func highlightsHeadingAfterAttach() async {
         let (_, textView, highlighter, scrollView) = makeEditor(text: "# Heading\n\nplain text\n")
         _ = highlighter; _ = scrollView

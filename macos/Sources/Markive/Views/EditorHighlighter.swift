@@ -26,6 +26,12 @@ final class EditorHighlighter {
     /// keystroke-invisible around here.
     static let sizeLimit = 2_000_000
 
+    /// Up to this many UTF-16 units the first highlight parses
+    /// synchronously on attach — around a millisecond of main-thread
+    /// work, and the document opens already colored. Larger documents
+    /// take the async path and color a beat later.
+    static let synchronousParseLimit = 262_144
+
     private weak var textView: NSTextView?
     private weak var document: MarkdownDocument?
     /// Current spans in document (event) order — an enclosing construct
@@ -37,14 +43,14 @@ final class EditorHighlighter {
     // unregister, and deinit is nonisolated.
     nonisolated(unsafe) private var storageObserver: NSObjectProtocol?
     nonisolated(unsafe) private var scrollObserver: NSObjectProtocol?
+    nonisolated(unsafe) private var frameObserver: NSObjectProtocol?
     private var highlightTask: Task<Void, Never>?
 
     deinit {
-        if let storageObserver {
-            NotificationCenter.default.removeObserver(storageObserver)
-        }
-        if let scrollObserver {
-            NotificationCenter.default.removeObserver(scrollObserver)
+        for observer in [storageObserver, scrollObserver, frameObserver] {
+            if let observer {
+                NotificationCenter.default.removeObserver(observer)
+            }
         }
     }
 
@@ -97,7 +103,35 @@ final class EditorHighlighter {
                 }
             }
         }
-        scheduleHighlight(afterDebounce: false)
+        // The initial layout pass lands after attach and clears eagerly
+        // set attributes; it also resizes the text view to fit. Repaint
+        // when that resize happens so a freshly opened document colors
+        // as soon as it is laid out, not on the next scroll.
+        if let frameObserver {
+            NotificationCenter.default.removeObserver(frameObserver)
+            self.frameObserver = nil
+        }
+        textView.postsFrameChangedNotifications = true
+        frameObserver = NotificationCenter.default.addObserver(
+            forName: NSView.frameDidChangeNotification,
+            object: textView,
+            queue: nil
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.reapply(self.highlights)
+            }
+        }
+
+        // Small documents parse in about a millisecond — do the first
+        // highlight synchronously so the document opens colored instead
+        // of colorizing a beat after it appears.
+        if document.textStorage.length <= Self.synchronousParseLimit {
+            highlightTask?.cancel()
+            apply(MarkiveCore.highlightSpans(markdown: document.textStorage.string))
+        } else {
+            scheduleHighlight(afterDebounce: false)
+        }
     }
 
     private func scheduleHighlight(afterDebounce: Bool) {
