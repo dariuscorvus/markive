@@ -33,6 +33,9 @@ struct SidebarView: View {
                 .badge(model.store.documents.count)
             Label("Recent", systemImage: "clock")
                 .tag(SidebarItem.recent)
+            Label("Favorites", systemImage: "star")
+                .tag(SidebarItem.favorites)
+                .badge(model.store.favoriteDocuments.count)
         }
     }
 

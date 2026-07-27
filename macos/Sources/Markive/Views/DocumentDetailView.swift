@@ -80,6 +80,17 @@ struct DocumentDetailView: View {
             .help("Switch between source and preview")
         }
         ToolbarItemGroup(placement: .primaryAction) {
+            Button {
+                model.toggleFavoriteForSelection()
+            } label: {
+                Label(
+                    "Favorite",
+                    systemImage: model.selectedDocument.map { model.store.isFavorite($0) } == true
+                        ? "star.fill" : "star"
+                )
+            }
+            .disabled(model.selectedDocument == nil)
+            .help("Add or remove this document from Favorites")
             // Unconditional so the toolbar structure never rebuilds mid-typing:
             // conditional toolbar content re-hosts the search field and can
             // detach it from its binding, like the List/empty-state swap did.

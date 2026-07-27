@@ -100,10 +100,13 @@ struct DocumentListView: View {
     private var documentList: some View {
         List(selection: selectionBinding) {
             ForEach(model.visibleDocuments) { document in
-                DocumentRow(document: document)
+                DocumentRow(document: document, isFavorite: model.store.isFavorite(document))
                     .tag(document.id)
                     .draggable(document.url)
                     .contextMenu {
+                        Button(model.store.isFavorite(document) ? "Remove from Favorites" : "Add to Favorites") {
+                            model.store.toggleFavorite(document)
+                        }
                         Button("Rename…") {
                             renameTitle = document.title
                             renameTarget = document
@@ -135,13 +138,23 @@ struct DocumentListView: View {
 
 struct DocumentRow: View {
     var document: DocumentItem
+    var isFavorite: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(document.title)
-            Text("\(document.folderLabel) · \(document.modifiedAt.formatted(.relative(presentation: .named)))")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+        HStack(alignment: .firstTextBaseline) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(document.title)
+                Text("\(document.folderLabel) · \(document.modifiedAt.formatted(.relative(presentation: .named)))")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            if isFavorite {
+                Image(systemName: "star.fill")
+                    .foregroundStyle(.yellow)
+                    .imageScale(.small)
+                    .accessibilityLabel("Favorite")
+            }
         }
         .padding(.vertical, 2)
     }
