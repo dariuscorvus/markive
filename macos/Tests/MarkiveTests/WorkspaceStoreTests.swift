@@ -126,8 +126,7 @@ private func isolatedDefaults() -> UserDefaults {
         #expect(document.buffer.text.contains("Wörld — ünïcode"))
         #expect(!document.hasUnautosavedChanges)
 
-        document.buffer.text = "# Changed"
-        document.noteEdited()
+        document.replaceText("# Changed")
         #expect(document.hasUnautosavedChanges)
 
         try document.write(to: item.url, ofType: MarkdownDocument.markdownType)
@@ -135,6 +134,64 @@ private func isolatedDefaults() -> UserDefaults {
         #expect(onDisk == "# Changed")
 
         #expect(try session.document(for: item) === document)
+    }
+
+    @MainActor
+    @Test func bufferRevisionTracksStorageEdits() throws {
+        let fixture = try FixtureWorkspace(files: [("doc.md", "start")])
+        defer { fixture.tearDown() }
+        let root = fixture.root.standardizedFileURL.resolvingSymlinksInPath()
+        let item = try #require(WorkspaceStore.item(
+            at: root.appendingPathComponent("doc.md"), root: root, rootName: "F"
+        ))
+        let document = try DocumentSession().document(for: item)
+        let before = document.buffer.revision
+
+        // Direct storage mutation — the path the editor view uses.
+        document.textStorage.replaceCharacters(
+            in: NSRange(location: 0, length: 5),
+            with: "changed"
+        )
+        #expect(document.buffer.revision > before)
+        #expect(document.buffer.text == "changed")
+    }
+
+    @MainActor
+    @Test func twentyMegabyteStorageRoundTripWithinBudget() throws {
+        var markdown = "# Perf fixture\n\n"
+        markdown.reserveCapacity(21 * 1024 * 1024)
+        var line = 0
+        while markdown.utf8.count < 20 * 1024 * 1024 {
+            markdown += "## Section \(line)\n\nSome *inline* text with `code` and a [link](https://example.com/\(line)).\n\n"
+            line += 1
+        }
+        let fixture = try FixtureWorkspace(files: [("big.md", markdown)])
+        defer { fixture.tearDown() }
+        let root = fixture.root.standardizedFileURL.resolvingSymlinksInPath()
+        let item = try #require(WorkspaceStore.item(
+            at: root.appendingPathComponent("big.md"), root: root, rootName: "F"
+        ))
+
+        let openStart = ContinuousClock.now
+        let document = try DocumentSession().document(for: item)
+        let openElapsed = ContinuousClock.now - openStart
+        #expect(document.textStorage.length > 19_000_000)
+
+        let editStart = ContinuousClock.now
+        document.textStorage.replaceCharacters(
+            in: NSRange(location: document.textStorage.length, length: 0),
+            with: "x"
+        )
+        let editElapsed = ContinuousClock.now - editStart
+
+        let serializeStart = ContinuousClock.now
+        _ = try document.data(ofType: MarkdownDocument.markdownType)
+        let serializeElapsed = ContinuousClock.now - serializeStart
+
+        print("20 MB storage: open \(openElapsed), append \(editElapsed), serialize \(serializeElapsed)")
+        #expect(openElapsed < .seconds(5), "open took \(openElapsed)")
+        #expect(editElapsed < .seconds(1), "append took \(editElapsed)")
+        #expect(serializeElapsed < .seconds(5), "serialize took \(serializeElapsed)")
     }
 
     @MainActor
@@ -210,8 +267,7 @@ private func isolatedDefaults() -> UserDefaults {
             at: root.appendingPathComponent("doc.md"), root: root, rootName: "F"
         ))
         let document = try DocumentSession().document(for: item)
-        document.buffer.text = "local edit"
-        document.noteEdited()
+        document.replaceText("local edit")
 
         try writeExternally("v2", to: item.url)
         document.checkExternalChange()
@@ -272,8 +328,7 @@ private func isolatedDefaults() -> UserDefaults {
         let original = try #require(store.documents.first)
         let document = try store.session.document(for: original)
 
-        document.buffer.text = "edited"
-        document.noteEdited()
+        document.replaceText("edited")
         await withCheckedContinuation { continuation in
             document.autosave(withImplicitCancellability: false) { _ in
                 continuation.resume()
