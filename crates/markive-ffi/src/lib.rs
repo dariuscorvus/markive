@@ -4,6 +4,11 @@
 //! caller and must be released with [`mk_string_free`]. Inputs must be
 //! NUL-terminated UTF-8; invalid UTF-8 yields a null pointer.
 
+// Every export here dereferences caller pointers by design; the safety
+// contract lives in the header comments, not in `unsafe fn` signatures
+// (extern "C" symbols are called from C, which has no unsafe keyword).
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
+
 use std::ffi::{CStr, CString, c_char};
 use std::path::Path;
 
@@ -35,6 +40,64 @@ pub extern "C" fn mk_render_document(
     }
 }
 
+/// One editor highlight span: a half-open `[start, end)` byte range of
+/// the UTF-8 source and a kind discriminant matching
+/// `markive_core::SpanKind` (0 heading … 7 blockquote).
+#[repr(C)]
+pub struct MkSpan {
+    pub start: u32,
+    pub end: u32,
+    pub kind: u8,
+}
+
+/// Extracts highlight spans from NUL-terminated UTF-8 Markdown. Writes
+/// the span count to `out_len` and returns a caller-owned array to be
+/// released with [`mk_spans_free`] using the same length. Returns null
+/// (with `out_len` 0) on invalid input or when there are no spans.
+#[unsafe(no_mangle)]
+pub extern "C" fn mk_highlight_spans(
+    markdown: *const c_char,
+    out_len: *mut usize,
+) -> *mut MkSpan {
+    if out_len.is_null() {
+        return std::ptr::null_mut();
+    }
+    unsafe { *out_len = 0 };
+    if markdown.is_null() {
+        return std::ptr::null_mut();
+    }
+    let Ok(markdown) = (unsafe { CStr::from_ptr(markdown) }).to_str() else {
+        return std::ptr::null_mut();
+    };
+
+    let spans: Vec<MkSpan> = markive_core::highlight_spans(markdown)
+        .into_iter()
+        .map(|span| MkSpan {
+            start: span.start,
+            end: span.end,
+            kind: span.kind as u8,
+        })
+        .collect();
+    if spans.is_empty() {
+        return std::ptr::null_mut();
+    }
+
+    let mut spans = spans.into_boxed_slice();
+    unsafe { *out_len = spans.len() };
+    let ptr = spans.as_mut_ptr();
+    std::mem::forget(spans);
+    ptr
+}
+
+/// Releases a span array returned by [`mk_highlight_spans`]. `len` must
+/// be the value written to `out_len`. Null is a no-op.
+#[unsafe(no_mangle)]
+pub extern "C" fn mk_spans_free(ptr: *mut MkSpan, len: usize) {
+    if !ptr.is_null() {
+        drop(unsafe { Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr, len)) });
+    }
+}
+
 /// Releases a string returned by this crate. Null is a no-op.
 #[unsafe(no_mangle)]
 pub extern "C" fn mk_string_free(ptr: *mut c_char) {
@@ -57,6 +120,31 @@ mod tests {
         assert!(html.contains("<h1"));
         assert!(html.contains("<em>world</em>"));
         mk_string_free(out);
+    }
+
+    #[test]
+    fn highlights_and_frees() {
+        let input = CString::new("# Hi\n\n*em*").unwrap();
+        let mut len = 0usize;
+        let out = mk_highlight_spans(input.as_ptr(), &raw mut len);
+        assert!(!out.is_null());
+        assert_eq!(len, 2);
+        let spans = unsafe { std::slice::from_raw_parts(out, len) };
+        assert_eq!((spans[0].start, spans[0].end, spans[0].kind), (0, 5, 0));
+        assert_eq!(spans[1].kind, 1);
+        mk_spans_free(out, len);
+    }
+
+    #[test]
+    fn empty_and_invalid_span_inputs_yield_null() {
+        let mut len = 42usize;
+        let empty = CString::new("").unwrap();
+        assert!(mk_highlight_spans(empty.as_ptr(), &raw mut len).is_null());
+        assert_eq!(len, 0);
+        len = 42;
+        assert!(mk_highlight_spans(std::ptr::null(), &raw mut len).is_null());
+        assert_eq!(len, 0);
+        mk_spans_free(std::ptr::null_mut(), 0);
     }
 
     #[test]

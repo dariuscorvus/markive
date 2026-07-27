@@ -15,6 +15,7 @@ struct MarkdownTextView: NSViewRepresentable {
     @MainActor
     final class Coordinator: NSObject, NSTextViewDelegate {
         var document: MarkdownDocument
+        let highlighter = EditorHighlighter()
 
         init(document: MarkdownDocument) {
             self.document = document
@@ -62,7 +63,7 @@ struct MarkdownTextView: NSViewRepresentable {
         scrollView.drawsBackground = true
         scrollView.documentView = textView
 
-        attach(to: textView)
+        attach(to: textView, coordinator: context.coordinator)
         return scrollView
     }
 
@@ -72,15 +73,16 @@ struct MarkdownTextView: NSViewRepresentable {
         // SwiftUI reuses the view when the selection moves to another
         // document; retarget the storage and reset the caret.
         if textView.textContentStorage?.textStorage !== document.textStorage {
-            attach(to: textView)
+            attach(to: textView, coordinator: context.coordinator)
         }
     }
 
-    private func attach(to textView: NSTextView) {
+    private func attach(to textView: NSTextView, coordinator: Coordinator) {
         textView.textContentStorage?.textStorage = document.textStorage
         textView.setSelectedRange(NSRange(location: 0, length: 0))
         // Typing attributes don't carry over from the previous storage.
         textView.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
         textView.textColor = .labelColor
+        coordinator.highlighter.attach(textView: textView, document: document)
     }
 }
