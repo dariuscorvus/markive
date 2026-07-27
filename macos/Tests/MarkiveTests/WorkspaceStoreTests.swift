@@ -243,6 +243,24 @@ private func isolatedDefaults() -> UserDefaults {
     }
 
     @MainActor
+    @Test func rescanReconcilesOpenDocuments() async throws {
+        // The presenter path (NSFilePresenter) doesn't fire for uncoordinated
+        // writers; the rescan must reconcile open buffers itself.
+        let fixture = try FixtureWorkspace(files: [("doc.md", "v1")])
+        defer { fixture.tearDown() }
+        let store = WorkspaceStore(defaults: isolatedDefaults())
+        await store.openWorkspace(at: fixture.root)
+        let item = try #require(store.documents.first)
+        let document = try store.session.document(for: item)
+        #expect(document.buffer.text == "v1")
+
+        try writeExternally("v2", to: item.url)
+        await store.rescan()
+
+        #expect(document.buffer.text == "v2")
+    }
+
+    @MainActor
     @Test func watcherPicksUpExternalCreate() async throws {
         let fixture = try FixtureWorkspace(files: [("one.md", "1")])
         defer { fixture.tearDown() }

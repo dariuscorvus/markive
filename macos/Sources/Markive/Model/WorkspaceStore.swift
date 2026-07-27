@@ -75,6 +75,7 @@ final class WorkspaceStore {
         guard generation == scanGeneration else { return }
         folderTree = snapshot.folders
         documents = snapshot.documents
+        session.checkExternalChanges()
     }
 
     /// Reopen the most recent workspace on launch. No-op if a workspace is already
