@@ -24,6 +24,76 @@ struct MarkdownTextView: NSViewRepresentable {
         func undoManager(for view: NSTextView) -> UndoManager? {
             document.undoManager
         }
+
+        // MARK: - List editing
+
+        /// Return continues list items, Tab/Shift-Tab indent and outdent
+        /// them. All edits go through insertText(_:replacementRange:) so
+        /// they are undoable and hit the storage observers.
+        func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+            switch commandSelector {
+            case #selector(NSResponder.insertNewline(_:)):
+                return handleReturn(in: textView)
+            case #selector(NSResponder.insertTab(_:)):
+                return handleIndent(in: textView)
+            case #selector(NSResponder.insertBacktab(_:)):
+                return handleOutdent(in: textView)
+            default:
+                return false
+            }
+        }
+
+        /// The caret's line, when the selection is a plain caret.
+        private func caretLine(
+            in textView: NSTextView
+        ) -> (lineRange: NSRange, line: String, caret: Int)? {
+            let selection = textView.selectedRange()
+            guard selection.length == 0 else { return nil }
+            let text = textView.string as NSString
+            let lineRange = text.lineRange(for: selection)
+            var line = text.substring(with: lineRange)
+            if line.hasSuffix("\n") { line.removeLast() }
+            return (lineRange, line, selection.location)
+        }
+
+        private func handleReturn(in textView: NSTextView) -> Bool {
+            guard let (lineRange, line, caret) = caretLine(in: textView),
+                  let action = MarkdownListEditing.returnAction(
+                      forLine: line, caretOffset: caret - lineRange.location
+                  ) else { return false }
+            switch action {
+            case .continueList(let prefix):
+                textView.insertText("\n" + prefix, replacementRange: textView.selectedRange())
+            case .endList(let markerLength):
+                textView.insertText(
+                    "",
+                    replacementRange: NSRange(location: lineRange.location, length: markerLength)
+                )
+            }
+            return true
+        }
+
+        private func handleIndent(in textView: NSTextView) -> Bool {
+            guard let (lineRange, line, _) = caretLine(in: textView),
+                  MarkdownListEditing.marker(ofLine: line) != nil else { return false }
+            textView.insertText(
+                MarkdownListEditing.indentUnit,
+                replacementRange: NSRange(location: lineRange.location, length: 0)
+            )
+            return true
+        }
+
+        private func handleOutdent(in textView: NSTextView) -> Bool {
+            guard let (lineRange, line, _) = caretLine(in: textView),
+                  MarkdownListEditing.marker(ofLine: line) != nil else { return false }
+            let length = MarkdownListEditing.outdentLength(ofLine: line)
+            guard length > 0 else { return true }
+            textView.insertText(
+                "",
+                replacementRange: NSRange(location: lineRange.location, length: length)
+            )
+            return true
+        }
     }
 
     func makeCoordinator() -> Coordinator {
