@@ -6,9 +6,14 @@ import WebKit
 /// all network schemes blocked by a content rule list, every local file read
 /// funneled through the asset scheme's workspace-containment check, and all
 /// link activations routed out of the web view.
+///
+/// Switching documents loads the page fresh; body changes for the same
+/// document swap `#content` via JS so the scroll position survives.
 struct MarkdownWebView: NSViewRepresentable {
-    /// Full page HTML (PreviewPage.page output).
-    var page: String
+    var documentID: FileID
+    var title: String
+    /// Sanitized body HTML from markive-core.
+    var body: String
     /// Current workspace root for asset containment; nil denies all reads.
     var workspaceRoot: () -> URL?
     /// A local Markdown file was clicked (absolute path inside the workspace).
@@ -17,22 +22,45 @@ struct MarkdownWebView: NSViewRepresentable {
     @MainActor
     final class Coordinator: NSObject, WKNavigationDelegate {
         var parent: MarkdownWebView
-        var currentPage = ""
-        private var loadedPage: String?
+        private(set) var currentPage = ""
+        private var loadedDocumentID: FileID?
+        private var appliedBody: String?
+        private var pageReady = false
 
         init(parent: MarkdownWebView) {
             self.parent = parent
         }
 
-        func load(into webView: WKWebView) {
-            guard currentPage != loadedPage else { return }
-            loadedPage = currentPage
-            Task {
-                if let rules = await NetworkBlockRules.compiled() {
-                    webView.configuration.userContentController.add(rules)
+        func apply(to webView: WKWebView) {
+            currentPage = PreviewPage.page(body: parent.body, title: parent.title)
+            if loadedDocumentID != parent.documentID {
+                loadedDocumentID = parent.documentID
+                appliedBody = parent.body
+                pageReady = false
+                Task {
+                    if let rules = await NetworkBlockRules.compiled() {
+                        webView.configuration.userContentController.add(rules)
+                    }
+                    webView.load(URLRequest(url: PreviewPage.pageURL))
                 }
-                webView.load(URLRequest(url: PreviewPage.pageURL))
+            } else if appliedBody != parent.body {
+                appliedBody = parent.body
+                swapContent(in: webView)
             }
+        }
+
+        private func swapContent(in webView: WKWebView) {
+            // A swap racing the initial load is applied from didFinish instead.
+            guard pageReady, let script = PreviewPage.contentSwapScript(body: parent.body) else { return }
+            webView.evaluateJavaScript(script)
+        }
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            pageReady = true
+            if appliedBody != parent.body {
+                appliedBody = parent.body
+            }
+            swapContent(in: webView)
         }
 
         func webView(
@@ -80,8 +108,7 @@ struct MarkdownWebView: NSViewRepresentable {
 
     func updateNSView(_ webView: WKWebView, context: Context) {
         context.coordinator.parent = self
-        context.coordinator.currentPage = page
-        context.coordinator.load(into: webView)
+        context.coordinator.apply(to: webView)
     }
 }
 
