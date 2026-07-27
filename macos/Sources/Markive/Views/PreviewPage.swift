@@ -240,7 +240,7 @@ enum PreviewPage {
         padding: 1em;
         overflow-x: auto;
         border-radius: 12px;
-        background: linear-gradient(90deg, var(--glass-bg-left), var(--glass-bg-right));
+        background: radial-gradient(circle at top left, var(--glass-bg-left), var(--glass-bg-right) 55%);
         backdrop-filter: blur(24px) saturate(180%);
         -webkit-backdrop-filter: blur(24px) saturate(180%);
         box-shadow: inset 0 0 0 .5px var(--glass-border), inset 0 1px 0 var(--glass-highlight);
