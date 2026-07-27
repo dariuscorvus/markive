@@ -48,19 +48,18 @@ enum DocumentSortOrder: String, CaseIterable, Identifiable {
     }
 }
 
-/// Content of the single selected document, loaded on demand.
+/// The single selected document, opened through the shared NSDocument session.
 struct OpenedDocument {
     enum State {
-        case loading
-        case loaded(String)
+        case document(MarkdownDocument)
         case failed(DocumentLoadFailure)
     }
 
     var id: FileID
     var state: State
 
-    var text: String? {
-        if case .loaded(let text) = state { return text }
+    var document: MarkdownDocument? {
+        if case .document(let document) = state { return document }
         return nil
     }
 }
@@ -77,10 +76,13 @@ final class WorkspaceModel {
             guard sidebarSelection != oldValue else { return }
             documentSelection = []
             // Selecting a recent workspace is an action, not a filter: open it,
-            // then land on All Documents.
+            // then land on All Documents. Deferred — reassigning the selection
+            // inside didSet is a reentrant NSTableView update.
             if case .recentWorkspace(let url) = sidebarSelection {
-                sidebarSelection = .allDocuments
-                Task { await store.openWorkspace(at: url) }
+                Task { @MainActor in
+                    sidebarSelection = .allDocuments
+                    await store.openWorkspace(at: url)
+                }
             }
         }
     }
@@ -133,24 +135,19 @@ final class WorkspaceModel {
         documentSelection = newValue
     }
 
-    /// Load the selected document's content. Runs from `.task(id:)` in the detail
-    /// column, so it cancels and restarts as the selection changes.
-    func loadSelectedDocument() async {
-        guard let document = selectedDocument else {
+    /// Open the selected document through the shared session. Called whenever
+    /// the selection changes.
+    func loadSelectedDocument() {
+        guard let item = selectedDocument else {
             openedDocument = nil
             return
         }
-        openedDocument = OpenedDocument(id: document.id, state: .loading)
-        let url = document.url
-        let result = await Task.detached(priority: .userInitiated) {
-            Result { try WorkspaceStore.readContent(at: url) }
-        }.value
-        guard openedDocument?.id == document.id else { return }
-        switch result {
-        case .success(let text):
-            openedDocument?.state = .loaded(text)
-        case .failure(let error):
-            openedDocument?.state = .failed(error as? DocumentLoadFailure ?? .unreadable)
+        do {
+            let document = try store.session.document(for: item)
+            openedDocument = OpenedDocument(id: item.id, state: .document(document))
+        } catch {
+            let failure = error as? DocumentLoadFailure ?? .unreadable
+            openedDocument = OpenedDocument(id: item.id, state: .failed(failure))
         }
     }
 
@@ -241,6 +238,43 @@ final class WorkspaceModel {
     }
 
     // MARK: - Actions
+
+    /// User-visible message from a failed create/rename/trash. Views alert on it.
+    var lastErrorMessage: String?
+
+    func newDocument() {
+        let folder: String? = if case .folder(let path) = sidebarSelection { path } else { nil }
+        do {
+            let item = try store.createDocument(inFolder: folder)
+            searchText = ""
+            setDocumentSelection([item.id])
+        } catch {
+            lastErrorMessage = error.localizedDescription
+        }
+    }
+
+    func rename(_ item: DocumentItem, to newTitle: String) {
+        do {
+            _ = try store.rename(item, to: newTitle)
+        } catch {
+            lastErrorMessage = error.localizedDescription
+        }
+    }
+
+    func trash(_ item: DocumentItem) {
+        do {
+            try store.trash(item)
+            documentSelection.remove(item.id)
+            backStack.removeAll { $0 == item.id }
+            forwardStack.removeAll { $0 == item.id }
+        } catch {
+            lastErrorMessage = error.localizedDescription
+        }
+    }
+
+    func saveSelectedDocument() {
+        openedDocument?.document?.save(nil)
+    }
 
     func open(_ document: DocumentItem) {
         setDocumentSelection([document.id])

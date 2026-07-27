@@ -5,8 +5,8 @@ struct DocumentDetailView: View {
 
     var body: some View {
         content
-            .task(id: model.selectedDocumentID) {
-                await model.loadSelectedDocument()
+            .onChange(of: model.selectedDocumentID, initial: true) {
+                model.loadSelectedDocument()
             }
             .navigationTitle(model.selectedDocument?.title ?? model.workspaceName ?? "Markive")
             .navigationSubtitle(model.selectedDocument?.relativePath ?? "")
@@ -83,8 +83,8 @@ struct DocumentDetailView: View {
             // Unconditional so the toolbar structure never rebuilds mid-typing:
             // conditional toolbar content re-hosts the search field and can
             // detach it from its binding, like the List/empty-state swap did.
-            ShareLink(item: model.openedDocument?.text ?? "")
-                .disabled(model.openedDocument?.text == nil)
+            ShareLink(item: model.openedDocument?.document?.buffer.text ?? "")
+                .disabled(model.openedDocument?.document == nil)
                 .help("Share the document text")
             Button {
                 model.isInspectorPresented.toggle()
@@ -102,7 +102,7 @@ private struct DocumentContentView: View {
 
     var body: some View {
         switch model.openedDocument?.state {
-        case nil, .loading:
+        case nil:
             ProgressView()
         case .failed(.missing):
             ContentUnavailableView(
@@ -116,23 +116,23 @@ private struct DocumentContentView: View {
                 systemImage: "exclamationmark.triangle",
                 description: Text("“\(document.relativePath)” is not UTF-8 text.")
             )
-        case .loaded(let text):
-            presentationBody(text: text)
+        case .document(let openDocument):
+            presentationBody(openDocument: openDocument)
         }
     }
 
     @ViewBuilder
-    private func presentationBody(text: String) -> some View {
+    private func presentationBody(openDocument: MarkdownDocument) -> some View {
         switch model.presentation {
         case .editor:
-            MarkdownEditorView(text: text)
+            MarkdownEditorView(document: openDocument)
         case .preview:
-            MarkdownPreviewView(title: document.title, text: text)
+            MarkdownPreviewView(title: document.title, text: openDocument.buffer.text)
         case .editorAndPreview:
             HSplitView {
-                MarkdownEditorView(text: text)
+                MarkdownEditorView(document: openDocument)
                     .frame(minWidth: 200)
-                MarkdownPreviewView(title: document.title, text: text)
+                MarkdownPreviewView(title: document.title, text: openDocument.buffer.text)
                     .frame(minWidth: 200)
             }
         }

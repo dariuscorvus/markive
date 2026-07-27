@@ -111,27 +111,122 @@ private func isolatedDefaults() -> UserDefaults {
     }
 }
 
-@Suite struct ContentTests {
-    @Test func readsUTF8() throws {
+@Suite struct DocumentSessionTests {
+    @MainActor
+    @Test func opensEditsWritesAndCaches() throws {
         let fixture = try FixtureWorkspace(files: [("doc.md", "# Hello\n\nWörld — ünïcode")])
         defer { fixture.tearDown() }
-        let text = try WorkspaceStore.readContent(at: fixture.root.appendingPathComponent("doc.md"))
-        #expect(text.contains("Wörld — ünïcode"))
+        let root = fixture.root.standardizedFileURL.resolvingSymlinksInPath()
+        let item = try #require(WorkspaceStore.item(
+            at: root.appendingPathComponent("doc.md"), root: root, rootName: "F"
+        ))
+
+        let session = DocumentSession()
+        let document = try session.document(for: item)
+        #expect(document.buffer.text.contains("Wörld — ünïcode"))
+        #expect(!document.hasUnautosavedChanges)
+
+        document.buffer.text = "# Changed"
+        document.noteEdited()
+        #expect(document.hasUnautosavedChanges)
+
+        try document.write(to: item.url, ofType: MarkdownDocument.markdownType)
+        let onDisk = try String(contentsOf: item.url, encoding: .utf8)
+        #expect(onDisk == "# Changed")
+
+        #expect(try session.document(for: item) === document)
     }
 
-    @Test func binaryFileIsUnreadable() throws {
+    @MainActor
+    @Test func binaryFileThrowsUnreadable() throws {
         let fixture = try FixtureWorkspace(data: [("blob.md", [0xFF, 0xFE, 0x00, 0xD8])])
         defer { fixture.tearDown() }
+        let root = fixture.root.standardizedFileURL.resolvingSymlinksInPath()
+        let item = try #require(WorkspaceStore.item(
+            at: root.appendingPathComponent("blob.md"), root: root, rootName: "F"
+        ))
+        let session = DocumentSession()
         #expect(throws: DocumentLoadFailure.unreadable) {
-            try WorkspaceStore.readContent(at: fixture.root.appendingPathComponent("blob.md"))
+            try session.document(for: item)
         }
     }
 
+    @MainActor
     @Test func missingFileThrowsMissing() throws {
         let fixture = try FixtureWorkspace()
         defer { fixture.tearDown() }
+        let item = DocumentItem(
+            id: FileID(device: 0, inode: 0),
+            url: fixture.root.appendingPathComponent("gone.md"),
+            title: "gone",
+            relativePath: "gone.md",
+            relativeFolder: "",
+            folderLabel: "F",
+            modifiedAt: .distantPast,
+            createdAt: .distantPast
+        )
+        let session = DocumentSession()
         #expect(throws: DocumentLoadFailure.missing) {
-            try WorkspaceStore.readContent(at: fixture.root.appendingPathComponent("gone.md"))
+            try session.document(for: item)
+        }
+    }
+}
+
+@Suite struct WriteOperationTests {
+    @MainActor
+    @Test func createNumbersUntitledDocuments() async throws {
+        let fixture = try FixtureWorkspace(files: [("Sub/existing.md", "x")])
+        defer { fixture.tearDown() }
+        let store = WorkspaceStore(defaults: isolatedDefaults())
+        await store.openWorkspace(at: fixture.root)
+
+        let first = try store.createDocument(inFolder: nil)
+        let second = try store.createDocument(inFolder: nil)
+        let nested = try store.createDocument(inFolder: "Sub")
+
+        #expect(first.title == "Untitled")
+        #expect(second.title == "Untitled 2")
+        #expect(nested.relativePath == "Sub/Untitled.md")
+        #expect(FileManager.default.fileExists(atPath: first.url.path))
+        #expect(store.documents.count == 4)
+    }
+
+    @MainActor
+    @Test func renameKeepsIdentityAndUpdatesMetadata() async throws {
+        let fixture = try FixtureWorkspace(files: [("one.md", "1"), ("two.md", "2")])
+        defer { fixture.tearDown() }
+        let store = WorkspaceStore(defaults: isolatedDefaults())
+        await store.openWorkspace(at: fixture.root)
+        let one = try #require(store.documents.first { $0.title == "one" })
+
+        let renamed = try store.rename(one, to: "renamed")
+        #expect(renamed.id == one.id)
+        #expect(renamed.relativePath == "renamed.md")
+        #expect(!FileManager.default.fileExists(atPath: one.url.path))
+        #expect(FileManager.default.fileExists(atPath: renamed.url.path))
+        #expect(store.documents.contains { $0.id == one.id && $0.title == "renamed" })
+
+        #expect(throws: WorkspaceStore.WriteError.self) {
+            try store.rename(renamed, to: "two")
+        }
+        #expect(throws: WorkspaceStore.WriteError.self) {
+            try store.rename(renamed, to: "a/b")
+        }
+    }
+
+    @MainActor
+    @Test func trashRemovesDocument() async throws {
+        let fixture = try FixtureWorkspace(files: [("doomed.md", "bye")])
+        defer { fixture.tearDown() }
+        let store = WorkspaceStore(defaults: isolatedDefaults())
+        await store.openWorkspace(at: fixture.root)
+        let doomed = try #require(store.documents.first)
+
+        let trashedURL = try store.trash(doomed)
+        #expect(!FileManager.default.fileExists(atPath: doomed.url.path))
+        #expect(store.documents.isEmpty)
+        if let trashedURL {
+            try? FileManager.default.removeItem(at: trashedURL)
         }
     }
 }

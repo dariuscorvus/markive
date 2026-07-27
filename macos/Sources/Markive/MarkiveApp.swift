@@ -1,7 +1,14 @@
 import SwiftUI
+import AppKit
 
 @main
 struct MarkiveApp: App {
+    init() {
+        // Periodic autosave is off (0) by default; without it, autosave-in-place
+        // only fires on events like deactivation and close.
+        NSDocumentController.shared.autosavingDelay = 5
+    }
+
     /// Shared across windows; each window keeps its own navigation state.
     @State private var store = MarkiveApp.makeStore()
 

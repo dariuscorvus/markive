@@ -3,6 +3,9 @@ import AppKit
 
 struct DocumentListView: View {
     @Bindable var model: WorkspaceModel
+    @State private var documentPendingTrash: DocumentItem?
+    @State private var renameTarget: DocumentItem?
+    @State private var renameTitle = ""
 
     var body: some View {
         // The List must stay in the hierarchy permanently: swapping it out for an
@@ -15,13 +18,13 @@ struct DocumentListView: View {
             .searchable(text: $model.searchText, prompt: "Search documents")
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
-                    // Document creation arrives with the editing layer.
                     Button {
+                        model.newDocument()
                     } label: {
                         Label("New Document", systemImage: "square.and.pencil")
                     }
-                    .disabled(true)
-                    .help("Creating documents is not available yet")
+                    .disabled(!model.isWorkspaceOpen)
+                    .help("Create a new Markdown document (⌘N)")
                 }
                 ToolbarItem {
                     Menu {
@@ -36,6 +39,34 @@ struct DocumentListView: View {
                     }
                     .help("Change how documents are sorted")
                 }
+            }
+            .alert(
+                "Rename “\(renameTarget?.title ?? "")”",
+                isPresented: Binding(
+                    get: { renameTarget != nil },
+                    set: { if !$0 { renameTarget = nil } }
+                )
+            ) {
+                TextField("Title", text: $renameTitle)
+                Button("Rename") {
+                    if let target = renameTarget { model.rename(target, to: renameTitle) }
+                    renameTarget = nil
+                }
+                Button("Cancel", role: .cancel) { renameTarget = nil }
+            }
+            .confirmationDialog(
+                "Move “\(documentPendingTrash?.title ?? "")” to the Trash?",
+                isPresented: Binding(
+                    get: { documentPendingTrash != nil },
+                    set: { if !$0 { documentPendingTrash = nil } }
+                ),
+                titleVisibility: .visible
+            ) {
+                Button("Move to Trash", role: .destructive) {
+                    if let document = documentPendingTrash { model.trash(document) }
+                    documentPendingTrash = nil
+                }
+                Button("Cancel", role: .cancel) { documentPendingTrash = nil }
             }
     }
 
@@ -53,11 +84,13 @@ struct DocumentListView: View {
             ProgressView()
         } else if model.visibleDocuments.isEmpty {
             if model.searchText.isEmpty {
-                ContentUnavailableView(
-                    "No Documents",
-                    systemImage: "doc",
-                    description: Text("This collection has no Markdown documents.")
-                )
+                ContentUnavailableView {
+                    Label("No Documents", systemImage: "doc")
+                } description: {
+                    Text("This collection has no Markdown documents.")
+                } actions: {
+                    Button("Create Document") { model.newDocument() }
+                }
             } else {
                 ContentUnavailableView.search(text: model.searchText)
             }
@@ -71,12 +104,21 @@ struct DocumentListView: View {
                     .tag(document.id)
                     .draggable(document.url)
                     .contextMenu {
+                        Button("Rename…") {
+                            renameTitle = document.title
+                            renameTarget = document
+                        }
+                        Divider()
                         Button("Copy Path") {
                             NSPasteboard.general.clearContents()
                             NSPasteboard.general.setString(document.url.path, forType: .string)
                         }
                         Button("Show in Finder") {
                             NSWorkspace.shared.activateFileViewerSelecting([document.url])
+                        }
+                        Divider()
+                        Button("Move to Trash", role: .destructive) {
+                            documentPendingTrash = document
                         }
                     }
             }
