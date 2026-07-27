@@ -182,6 +182,10 @@ enum PreviewPage {
         --tok-type: #a2845e;
         --danger: #ff3b30;
         --danger-bg: rgba(255, 59, 48, .1);
+        --glass-bg: rgba(255, 255, 255, .55);
+        --glass-border: rgba(0, 0, 0, .08);
+        --glass-highlight: rgba(255, 255, 255, .9);
+        --glass-shadow: rgba(0, 0, 0, .06);
     }
     @media (prefers-color-scheme: dark) {
         :root {
@@ -198,6 +202,10 @@ enum PreviewPage {
             --tok-type: #ac8e68;
             --danger: #ff453a;
             --danger-bg: rgba(255, 69, 58, .15);
+            --glass-bg: rgba(255, 255, 255, .06);
+            --glass-border: rgba(255, 255, 255, .12);
+            --glass-highlight: rgba(255, 255, 255, .16);
+            --glass-shadow: rgba(0, 0, 0, .5);
         }
     }
     * { box-sizing: border-box; }
@@ -222,12 +230,23 @@ enum PreviewPage {
     p, ul, ol, blockquote, table, pre { margin: 0 0 1em; }
     code, pre {
         font: 85%/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
-        background: var(--code-bg);
         border-radius: 6px;
     }
-    code { padding: .2em .4em; }
-    pre { padding: 1em; overflow-x: auto; }
-    pre code { padding: 0; background: none; }
+    code { padding: .2em .4em; background: var(--code-bg); }
+    /* Liquid Glass approximation: WKWebView content can't use a real
+       NSVisualEffectView material, so blur + saturate + a translucent
+       tint + a glossy inner edge stand in for it. */
+    pre {
+        padding: 1em;
+        overflow-x: auto;
+        border-radius: 12px;
+        background: var(--glass-bg);
+        backdrop-filter: blur(24px) saturate(180%);
+        -webkit-backdrop-filter: blur(24px) saturate(180%);
+        border: 1px solid var(--glass-border);
+        box-shadow: inset 0 1px 0 var(--glass-highlight), 0 1px 2px var(--glass-shadow);
+    }
+    pre code { padding: 0; background: none; border-radius: 0; }
     .tok-keyword { color: var(--tok-keyword); }
     .tok-string { color: var(--tok-string); }
     .tok-comment { color: var(--tok-comment); }
