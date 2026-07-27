@@ -42,7 +42,7 @@ pub extern "C" fn mk_render_document(
 
 /// One editor highlight span: a half-open `[start, end)` byte range of
 /// the UTF-8 source and a kind discriminant matching
-/// `markive_core::SpanKind` (0 heading … 7 blockquote).
+/// `markive_core::SpanKind` (0 heading … 13 code type).
 #[repr(C)]
 pub struct MkSpan {
     pub start: u32,

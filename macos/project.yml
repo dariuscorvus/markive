@@ -13,6 +13,8 @@ targets:
       - Sources/Markive
       - path: Resources/AppIcon.icns
         buildPhase: resources
+      - path: Resources/vendor/mermaid.min.js
+        buildPhase: resources
     preBuildScripts:
       - name: Build markive-ffi
         script: scripts/build-ffi.sh

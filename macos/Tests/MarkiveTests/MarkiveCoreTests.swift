@@ -85,6 +85,23 @@ import Testing
         #expect(MarkiveCore.highlightSpans(markdown: "plain words\n").isEmpty)
     }
 
+    @Test func highlightSpansTokenizeFencedCodeWithARecognizedLanguage() {
+        let markdown = "```rust\nfn add(a: i32) -> i32 {\n    a + 41\n}\n```\n"
+        let spans = MarkiveCore.highlightSpans(markdown: markdown)
+        let text = markdown as NSString
+        let slice = { (kind: EditorHighlight.Kind) in
+            spans.filter { $0.kind == kind }.map { text.substring(with: $0.range) }
+        }
+        #expect(slice(.codeKeyword).contains("fn"))
+        #expect(slice(.codeNumber) == ["41"])
+    }
+
+    @Test func highlightSpansSkipTokenizingFencesWithoutALanguage() {
+        let markdown = "```\nplain fence\n```\n"
+        let spans = MarkiveCore.highlightSpans(markdown: markdown)
+        #expect(spans.map(\.kind) == [.codeBlock])
+    }
+
     @Test func utf8ToUTF16OffsetMapping() {
         // "a🎉b": UTF-8 offsets 0,1,5,6 ↔ UTF-16 offsets 0,1,3,4.
         let mapped = MarkiveCore.utf8ToUTF16Offsets("a🎉b", at: [0, 1, 5, 6, 3])

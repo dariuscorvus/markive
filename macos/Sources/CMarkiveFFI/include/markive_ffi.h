@@ -17,7 +17,9 @@ void mk_string_free(char *ptr);
 
 // One editor highlight span: a half-open [start, end) byte range of the
 // UTF-8 source. kind: 0 heading, 1 emphasis, 2 strong, 3 code span,
-// 4 code block, 5 link, 6 list marker, 7 blockquote.
+// 4 code block, 5 link, 6 list marker, 7 blockquote, 8 code keyword,
+// 9 code string, 10 code comment, 11 code number, 12 code function,
+// 13 code type.
 typedef struct {
     uint32_t start;
     uint32_t end;

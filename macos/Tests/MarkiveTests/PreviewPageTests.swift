@@ -49,6 +49,32 @@ import Testing
         #expect(script.contains(#"quote \" backslash \\ newline \n"#))
     }
 
+    @Test func pageLoadsTheMermaidScriptOverTheAssetScheme() {
+        let page = PreviewPage.page(body: "<p>Hi</p>", title: "T")
+        #expect(page.contains(#"<script src="\#(PreviewPage.mermaidScriptURL)"></script>"#))
+        #expect(page.contains("__markiveRenderMermaid"))
+    }
+
+    @Test func contentSwapScriptReRendersMermaidBlocks() throws {
+        let script = try #require(PreviewPage.contentSwapScript(body: "<p>Hi</p>"))
+        #expect(script.contains("window.__markiveRenderMermaid()"))
+    }
+
+    @Test func vendoredMermaidBundleIsPresentAndDefinesGlobal() throws {
+        // Loaded from the checked-in resource directly (not Bundle.main —
+        // that only resolves inside a real .app bundle, which `swift test`
+        // doesn't assemble) as a regression check that the vendored file
+        // is there and shaped the way the bootstrap script expects.
+        let vendored = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // MarkiveTests
+            .deletingLastPathComponent() // Tests
+            .deletingLastPathComponent() // macos
+            .appendingPathComponent("Resources/vendor/mermaid.min.js")
+        let script = try String(contentsOf: vendored, encoding: .utf8)
+        #expect(script.contains(#"globalThis["mermaid"]"#))
+        #expect(script.utf8.count > 1_000_000)
+    }
+
     @Test func mimeTypes() {
         #expect(PreviewPage.mimeType(forExtension: "PNG") == "image/png")
         #expect(PreviewPage.mimeType(forExtension: "jpeg") == "image/jpeg")
