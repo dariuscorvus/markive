@@ -2160,7 +2160,7 @@ checksum = "3e2e65a1a2e43cfcb47a895c4c8b10d1f4a61097f9f254f183aee60cad9c651d"
 
 [[package]]
 name = "markive"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "clipboard-rs",
  "markive-core",
@@ -2179,7 +2179,7 @@ dependencies = [
 
 [[package]]
 name = "markive-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "ammonia",
  "percent-encoding",
@@ -2188,7 +2188,7 @@ dependencies = [
 
 [[package]]
 name = "markive-ffi"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "markive-core",
 ]
