@@ -182,6 +182,10 @@ enum PreviewPage {
         --tok-type: #a2845e;
         --danger: #ff3b30;
         --danger-bg: rgba(255, 59, 48, .1);
+        --glass-bg-left: rgba(255, 255, 255, .5);
+        --glass-bg-right: rgba(255, 255, 255, .3);
+        --glass-border: rgba(0, 0, 0, .03);
+        --glass-highlight: rgba(255, 255, 255, .5);
     }
     @media (prefers-color-scheme: dark) {
         :root {
@@ -198,6 +202,10 @@ enum PreviewPage {
             --tok-type: #ac8e68;
             --danger: #ff453a;
             --danger-bg: rgba(255, 69, 58, .15);
+            --glass-bg-left: rgba(255, 255, 255, .07);
+            --glass-bg-right: rgba(255, 255, 255, .02);
+            --glass-border: rgba(255, 255, 255, .04);
+            --glass-highlight: rgba(255, 255, 255, .1);
         }
     }
     * { box-sizing: border-box; }
@@ -222,12 +230,22 @@ enum PreviewPage {
     p, ul, ol, blockquote, table, pre { margin: 0 0 1em; }
     code, pre {
         font: 85%/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
-        background: var(--code-bg);
         border-radius: 6px;
     }
-    code { padding: .2em .4em; }
-    pre { padding: 1em; overflow-x: auto; }
-    pre code { padding: 0; background: none; }
+    code { padding: .2em .4em; background: var(--code-bg); }
+    /* Liquid Glass approximation: WKWebView content can't use a real
+       NSVisualEffectView material, so blur + saturate + a translucent
+       tint + a glossy inner edge stand in for it. */
+    pre {
+        padding: 1em;
+        overflow-x: auto;
+        border-radius: 12px;
+        background: radial-gradient(circle at top left, var(--glass-bg-left), var(--glass-bg-right) 55%);
+        backdrop-filter: blur(24px) saturate(180%);
+        -webkit-backdrop-filter: blur(24px) saturate(180%);
+        box-shadow: inset 0 0 0 .5px var(--glass-border), inset 0 1px 0 var(--glass-highlight);
+    }
+    pre code { padding: 0; background: none; border-radius: 0; }
     .tok-keyword { color: var(--tok-keyword); }
     .tok-string { color: var(--tok-string); }
     .tok-comment { color: var(--tok-comment); }
