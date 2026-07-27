@@ -58,6 +58,10 @@ jobs:
           staging=$(mktemp -d)
           cp -R "$app" "$staging/"
           ln -s /Applications "$staging/Applications"
+          # Markive icon as the mounted volume's icon; SetFile flags the
+          # folder as having a custom icon so Finder honors it.
+          cp macos/Resources/AppIcon.icns "$staging/.VolumeIcon.icns"
+          SetFile -a C "$staging"
           hdiutil create -volname "Markive" -srcfolder "$staging" -ov -format UDZO \
             "Markive-native_${version}.dmg"
           echo "DMG=Markive-native_${version}.dmg" >> "$GITHUB_ENV"
