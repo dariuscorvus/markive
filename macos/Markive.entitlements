@@ -6,5 +6,11 @@
 	<true/>
 	<key>com.apple.security.files.user-selected.read-write</key>
 	<true/>
+	<!-- WKWebView's helper processes fail to bootstrap in a sandboxed app
+	     without this, leaving a blank view even for purely local content.
+	     Actual network access stays blocked by the preview's content rule
+	     list and navigation policy. -->
+	<key>com.apple.security.network.client</key>
+	<true/>
 </dict>
 </plist>

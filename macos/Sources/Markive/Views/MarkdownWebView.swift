@@ -63,6 +63,18 @@ struct MarkdownWebView: NSViewRepresentable {
             swapContent(in: webView)
         }
 
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: any Error) {
+            NSLog("MarkivePreview: didFail: %@", String(describing: error))
+        }
+
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: any Error) {
+            NSLog("MarkivePreview: didFailProvisional: %@", String(describing: error))
+        }
+
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            NSLog("MarkivePreview: web content process terminated")
+        }
+
         func webView(
             _ webView: WKWebView,
             decidePolicyFor navigationAction: WKNavigationAction,
