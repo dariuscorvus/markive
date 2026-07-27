@@ -19,23 +19,25 @@ struct AppCommands: Commands {
     private var fileCommands: some Commands {
         Group {
             CommandGroup(replacing: .newItem) {
-                Button("New Document") { workspace?.newDocument() }
+                // Document creation arrives with the editing layer.
+                Button("New Document") {}
                     .keyboardShortcut("n")
-                    .disabled(workspace?.workspaceName == nil)
+                    .disabled(true)
                 Button("New Window") { openWindow(id: "main") }
                     .keyboardShortcut("n", modifiers: [.command, .shift])
                 Divider()
-                Button("Open Workspace…") { workspace?.openSampleWorkspace() }
+                Button("Open Workspace…") { workspace?.isWorkspaceImporterPresented = true }
                     .keyboardShortcut("o")
                     .disabled(workspace == nil)
                 Button("Quick Open…") { workspace?.isQuickOpenPresented = true }
                     .keyboardShortcut("p")
-                    .disabled(workspace?.workspaceName == nil)
+                    .disabled(workspace?.isWorkspaceOpen != true)
             }
             CommandGroup(replacing: .saveItem) {
-                Button("Save") { workspace?.saveSelectedDocument() }
+                // Saving arrives with the editing layer.
+                Button("Save") {}
                     .keyboardShortcut("s")
-                    .disabled(workspace?.selectedDocument == nil)
+                    .disabled(true)
             }
             // Frees ⌘P for Quick Open; printing Markdown is a later concern.
             CommandGroup(replacing: .printItem) {}
@@ -74,10 +76,10 @@ struct AppCommands: Commands {
             Divider()
             Button("Next Document") { workspace?.selectAdjacentDocument(offset: 1) }
                 .keyboardShortcut(.downArrow, modifiers: [.command, .option])
-                .disabled(workspace?.workspaceName == nil)
+                .disabled(workspace?.isWorkspaceOpen != true)
             Button("Previous Document") { workspace?.selectAdjacentDocument(offset: -1) }
                 .keyboardShortcut(.upArrow, modifiers: [.command, .option])
-                .disabled(workspace?.workspaceName == nil)
+                .disabled(workspace?.isWorkspaceOpen != true)
         }
     }
 

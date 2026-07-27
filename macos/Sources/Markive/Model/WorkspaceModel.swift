@@ -4,12 +4,10 @@ import Observation
 enum SidebarItem: Hashable {
     case allDocuments
     case recent
-    case favorites
     case workspaceRoot
     case folder(String)
-    case tag(String)
-    case location(DocumentLocation)
     case savedSearch(SavedSearch)
+    case recentWorkspace(URL)
 }
 
 enum DetailPresentation: String, CaseIterable, Identifiable {
@@ -50,26 +48,51 @@ enum DocumentSortOrder: String, CaseIterable, Identifiable {
     }
 }
 
-/// Per-window navigation and selection state. Document data lives in `PrototypeStore`,
-/// which is shared across windows.
+/// Content of the single selected document, loaded on demand.
+struct OpenedDocument {
+    enum State {
+        case loading
+        case loaded(String)
+        case failed(DocumentLoadFailure)
+    }
+
+    var id: FileID
+    var state: State
+
+    var text: String? {
+        if case .loaded(let text) = state { return text }
+        return nil
+    }
+}
+
+/// Per-window navigation and selection state. Document data lives in
+/// `WorkspaceStore`, which is shared across windows.
 @MainActor
 @Observable
 final class WorkspaceModel {
-    let store: PrototypeStore
-    var workspaceName: String?
+    let store: WorkspaceStore
 
     var sidebarSelection: SidebarItem? = .allDocuments {
         didSet {
-            if sidebarSelection != oldValue { documentSelection = [] }
+            guard sidebarSelection != oldValue else { return }
+            documentSelection = []
+            // Selecting a recent workspace is an action, not a filter: open it,
+            // then land on All Documents.
+            if case .recentWorkspace(let url) = sidebarSelection {
+                sidebarSelection = .allDocuments
+                Task { await store.openWorkspace(at: url) }
+            }
         }
     }
 
-    var documentSelection: Set<PrototypeDocument.ID> = []
+    var documentSelection: Set<FileID> = []
+    var openedDocument: OpenedDocument?
     var presentation: DetailPresentation = .editor
     var sortOrder: DocumentSortOrder = .dateModified
     var searchText = ""
     var isInspectorPresented = false
     var isQuickOpenPresented = false
+    var isWorkspaceImporterPresented = false
     var columnVisibility: NavigationSplitViewVisibility = .all
 
     var isFocusMode = false {
@@ -79,32 +102,56 @@ final class WorkspaceModel {
         }
     }
 
-    private var backStack: [PrototypeDocument.ID] = []
-    private var forwardStack: [PrototypeDocument.ID] = []
+    private var backStack: [FileID] = []
+    private var forwardStack: [FileID] = []
 
-    init(store: PrototypeStore, workspaceName: String? = "Markive Vault") {
+    init(store: WorkspaceStore) {
         self.store = store
-        self.workspaceName = workspaceName
     }
+
+    var isWorkspaceOpen: Bool { store.rootURL != nil }
+    var workspaceName: String? { store.rootName }
 
     // MARK: - Selection
 
-    var selectedDocumentID: PrototypeDocument.ID? {
+    var selectedDocumentID: FileID? {
         documentSelection.count == 1 ? documentSelection.first : nil
     }
 
-    var selectedDocument: PrototypeDocument? {
-        selectedDocumentID.flatMap { store.document(id: $0) }
+    var selectedDocument: DocumentItem? {
+        guard let id = selectedDocumentID else { return nil }
+        return store.documents.first { $0.id == id }
     }
 
     /// Route all list-driven selection changes through here so back/forward history is recorded.
-    func setDocumentSelection(_ newValue: Set<PrototypeDocument.ID>) {
+    func setDocumentSelection(_ newValue: Set<FileID>) {
         if let current = selectedDocumentID,
            newValue.count == 1, let next = newValue.first, next != current {
             backStack.append(current)
             forwardStack.removeAll()
         }
         documentSelection = newValue
+    }
+
+    /// Load the selected document's content. Runs from `.task(id:)` in the detail
+    /// column, so it cancels and restarts as the selection changes.
+    func loadSelectedDocument() async {
+        guard let document = selectedDocument else {
+            openedDocument = nil
+            return
+        }
+        openedDocument = OpenedDocument(id: document.id, state: .loading)
+        let url = document.url
+        let result = await Task.detached(priority: .userInitiated) {
+            Result { try WorkspaceStore.readContent(at: url) }
+        }.value
+        guard openedDocument?.id == document.id else { return }
+        switch result {
+        case .success(let text):
+            openedDocument?.state = .loaded(text)
+        case .failure(let error):
+            openedDocument?.state = .failed(error as? DocumentLoadFailure ?? .unreadable)
+        }
     }
 
     // MARK: - Documents for the current sidebar selection
@@ -114,47 +161,35 @@ final class WorkspaceModel {
         case nil: workspaceName ?? "Markive"
         case .allDocuments: "All Documents"
         case .recent: "Recent"
-        case .favorites: "Favorites"
         case .workspaceRoot: workspaceName ?? "Workspace"
         case .folder(let path): path.components(separatedBy: "/").last ?? path
-        case .tag(let tag): "#\(tag)"
-        case .location(let location): location.rawValue
         case .savedSearch(let search): search.rawValue
+        case .recentWorkspace(let url): url.lastPathComponent
         }
     }
 
-    private func documents(matching item: SidebarItem?) -> [PrototypeDocument] {
+    private func documents(matching item: SidebarItem?) -> [DocumentItem] {
         let all = store.documents
         switch item {
-        case nil:
+        case nil, .recentWorkspace:
             return []
         case .allDocuments, .workspaceRoot:
             return all
         case .recent:
             return Array(all.sorted { $0.modifiedAt > $1.modifiedAt }.prefix(10))
-        case .favorites:
-            return all.filter(\.isFavorite)
         case .folder(let path):
-            return all.filter { $0.folder == path || $0.folder.hasPrefix(path + "/") }
-        case .tag(let tag):
-            return all.filter { $0.tags.contains(tag) }
-        case .location(let location):
-            return all.filter { $0.location == location }
+            return all.filter { $0.relativeFolder == path || $0.relativeFolder.hasPrefix(path + "/") }
         case .savedSearch(.modifiedToday):
             return all.filter { Calendar.current.isDateInToday($0.modifiedAt) }
-        case .savedSearch(.unlinkedNotes):
-            return all.filter(\.isUnlinked)
         }
     }
 
-    var visibleDocuments: [PrototypeDocument] {
+    var visibleDocuments: [DocumentItem] {
         var documents = documents(matching: sidebarSelection)
         if !searchText.isEmpty {
             documents = documents.filter { document in
                 document.title.localizedCaseInsensitiveContains(searchText)
-                    || document.path.localizedCaseInsensitiveContains(searchText)
-                    || document.content.localizedCaseInsensitiveContains(searchText)
-                    || document.tags.contains { $0.localizedCaseInsensitiveContains(searchText) }
+                    || document.relativePath.localizedCaseInsensitiveContains(searchText)
             }
         }
         if case .recent = sidebarSelection { return documents }
@@ -184,7 +219,7 @@ final class WorkspaceModel {
     }
 
     /// Select a document without recording history, widening the sidebar scope if needed.
-    private func reveal(id: PrototypeDocument.ID) {
+    private func reveal(id: FileID) {
         if !visibleDocuments.contains(where: { $0.id == id }) {
             searchText = ""
             sidebarSelection = .allDocuments
@@ -207,14 +242,7 @@ final class WorkspaceModel {
 
     // MARK: - Actions
 
-    func newDocument() {
-        let document = store.createDocument()
-        searchText = ""
-        sidebarSelection = .allDocuments
-        setDocumentSelection([document.id])
-    }
-
-    func open(_ document: PrototypeDocument) {
+    func open(_ document: DocumentItem) {
         setDocumentSelection([document.id])
         if !visibleDocuments.contains(where: { $0.id == document.id }) {
             searchText = ""
@@ -222,23 +250,6 @@ final class WorkspaceModel {
             documentSelection = [document.id]
         }
         isQuickOpenPresented = false
-    }
-
-    func openSampleWorkspace() {
-        workspaceName = "Markive Vault"
-        sidebarSelection = .allDocuments
-    }
-
-    func remove(_ document: PrototypeDocument) {
-        store.remove(id: document.id)
-        documentSelection.remove(document.id)
-        backStack.removeAll { $0 == document.id }
-        forwardStack.removeAll { $0 == document.id }
-    }
-
-    func saveSelectedDocument() {
-        guard let id = selectedDocumentID else { return }
-        store.touch(id: id)
     }
 }
 

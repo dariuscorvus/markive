@@ -1,9 +1,10 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct MainWindowView: View {
     @State private var model: WorkspaceModel
 
-    init(store: PrototypeStore, configure: ((WorkspaceModel) -> Void)? = nil) {
+    init(store: WorkspaceStore, configure: ((WorkspaceModel) -> Void)? = nil) {
         let model = WorkspaceModel(store: store)
         configure?(model)
         _model = State(initialValue: model)
@@ -24,44 +25,43 @@ struct MainWindowView: View {
         .sheet(isPresented: $model.isQuickOpenPresented) {
             QuickOpenView(model: model)
         }
+        .fileImporter(
+            isPresented: $model.isWorkspaceImporterPresented,
+            allowedContentTypes: [.folder]
+        ) { result in
+            if case .success(let url) = result {
+                Task { await model.store.openWorkspace(at: url) }
+            }
+        }
+        .task {
+            await model.store.restoreMostRecentWorkspace()
+        }
         .focusedSceneValue(\.workspace, model)
     }
 }
 
-#Preview("Document selected") {
-    MainWindowView(store: .sample()) { model in
-        model.documentSelection = [model.store.documents[0].id]
-    }
+#Preview("Fixture workspace") {
+    let store = WorkspaceStore(defaults: PreviewFixtures.defaults())
+    MainWindowView(store: store)
+        .task { await store.openWorkspace(at: PreviewFixtures.workspaceURL()) }
 }
 
 #Preview("No workspace open") {
-    MainWindowView(store: .sample()) { model in
-        model.workspaceName = nil
-    }
-}
-
-#Preview("Empty collection") {
-    MainWindowView(store: .sample()) { model in
-        model.sidebarSelection = .location(.externalFolders)
-    }
-}
-
-#Preview("Search with no results") {
-    MainWindowView(store: .sample()) { model in
-        model.searchText = "zzzz"
-    }
+    MainWindowView(store: WorkspaceStore(defaults: PreviewFixtures.defaults()))
 }
 
 #Preview("Inspector visible") {
-    MainWindowView(store: .sample()) { model in
-        model.documentSelection = [model.store.documents[0].id]
+    let store = WorkspaceStore(defaults: PreviewFixtures.defaults())
+    MainWindowView(store: store) { model in
         model.isInspectorPresented = true
     }
+    .task { await store.openWorkspace(at: PreviewFixtures.workspaceURL()) }
 }
 
-#Preview("Editor and preview") {
-    MainWindowView(store: .sample()) { model in
-        model.documentSelection = [model.store.documents[0].id]
-        model.presentation = .editorAndPreview
+#Preview("Search with no results") {
+    let store = WorkspaceStore(defaults: PreviewFixtures.defaults())
+    MainWindowView(store: store) { model in
+        model.searchText = "zzzz"
     }
+    .task { await store.openWorkspace(at: PreviewFixtures.workspaceURL()) }
 }

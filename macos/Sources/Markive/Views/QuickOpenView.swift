@@ -1,21 +1,19 @@
 import SwiftUI
 
 /// Quick Open (⌘P) — a standard sheet with a searchable document list.
-/// There is no dedicated system palette component; this stays on native
-/// List + searchable rather than inventing custom chrome.
 struct QuickOpenView: View {
     @Bindable var model: WorkspaceModel
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
 
-    private var matches: [PrototypeDocument] {
+    private var matches: [DocumentItem] {
         let documents = model.store.documents
         guard !query.isEmpty else {
             return documents.sorted { $0.modifiedAt > $1.modifiedAt }
         }
         return documents.filter {
             $0.title.localizedCaseInsensitiveContains(query)
-                || $0.path.localizedCaseInsensitiveContains(query)
+                || $0.relativePath.localizedCaseInsensitiveContains(query)
         }
     }
 
@@ -31,7 +29,7 @@ struct QuickOpenView: View {
                         } label: {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(document.title)
-                                Text(document.path)
+                                Text(document.relativePath)
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
