@@ -165,12 +165,12 @@ private struct DocumentContentView: View {
         case .editor:
             MarkdownEditorView(document: openDocument)
         case .preview:
-            MarkdownPreviewView(title: document.title, text: openDocument.buffer.text)
+            MarkdownPreviewView(model: model, document: document, text: openDocument.buffer.text)
         case .editorAndPreview:
             HSplitView {
                 MarkdownEditorView(document: openDocument)
                     .frame(minWidth: 200)
-                MarkdownPreviewView(title: document.title, text: openDocument.buffer.text)
+                MarkdownPreviewView(model: model, document: document, text: openDocument.buffer.text)
                     .frame(minWidth: 200)
             }
         }

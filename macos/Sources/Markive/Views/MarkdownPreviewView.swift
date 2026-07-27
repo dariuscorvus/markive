@@ -1,26 +1,37 @@
 import SwiftUI
+import AppKit
 
-/// Placeholder for the rendered preview. Shows the raw text — the real renderer
-/// (markive-core pipeline) comes later.
+/// Rendered Markdown via markive-core → WKWebView. Static per selection for
+/// now; live re-render on edit is the next step.
 struct MarkdownPreviewView: View {
-    var title: String
+    @Bindable var model: WorkspaceModel
+    var document: DocumentItem
     var text: String
 
+    @State private var page: String?
+
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
-                Text(title)
-                    .font(.title.bold())
-                Text(text)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                Text("Preview placeholder — rendering arrives with the real pipeline.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+        Group {
+            if let page {
+                MarkdownWebView(
+                    page: page,
+                    workspaceRoot: { [store = model.store] in store.rootURL },
+                    onOpenLocalMarkdown: { path in
+                        model.openDocument(atAbsolutePath: path)
+                    }
+                )
+            } else {
+                ProgressView()
             }
-            .padding()
         }
-        .background(.background)
+        .task(id: document.id) {
+            let markdown = text
+            let baseDir = document.url.deletingLastPathComponent()
+            let body = await Task.detached(priority: .userInitiated) {
+                MarkiveCore.renderDocument(markdown: markdown, baseDir: baseDir)
+            }.value
+            page = PreviewPage.page(body: body, title: document.title)
+        }
         .accessibilityLabel("Markdown preview")
     }
 }
