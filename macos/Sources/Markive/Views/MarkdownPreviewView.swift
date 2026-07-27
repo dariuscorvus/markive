@@ -40,6 +40,13 @@ struct MarkdownPreviewView: View {
         }
         .task(id: document.id) {
             let html = await render(openDocument.buffer.text)
+            // Cancellation is cooperative: switching documents again while
+            // this render is in flight cancels this task, but render()
+            // keeps running regardless and would otherwise still land here
+            // and overwrite `rendered` with this now-superseded document's
+            // content — whichever render happened to finish last would win,
+            // not whichever document is actually selected.
+            guard !Task.isCancelled else { return }
             rendered = (document.id, document.title, html)
         }
         .onChange(of: openDocument.buffer.revision) {
@@ -48,6 +55,7 @@ struct MarkdownPreviewView: View {
                 try? await Task.sleep(for: .milliseconds(250))
                 guard !Task.isCancelled else { return }
                 let html = await render(openDocument.buffer.text)
+                guard !Task.isCancelled else { return }
                 rendered = (document.id, document.title, html)
             }
         }

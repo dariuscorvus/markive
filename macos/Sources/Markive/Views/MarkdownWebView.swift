@@ -26,6 +26,7 @@ struct MarkdownWebView: NSViewRepresentable {
         private var loadedDocumentID: FileID?
         private var appliedBody: String?
         private var pageReady = false
+        private var loadTask: Task<Void, Never>?
 
         init(parent: MarkdownWebView) {
             self.parent = parent
@@ -37,11 +38,19 @@ struct MarkdownWebView: NSViewRepresentable {
                 loadedDocumentID = parent.documentID
                 appliedBody = parent.body
                 pageReady = false
-                Task {
+                loadTask?.cancel()
+                loadTask = Task {
                     if let rules = await NetworkBlockRules.compiled() {
                         webView.configuration.userContentController.add(rules)
                     }
-                    webView.load(URLRequest(url: PreviewPage.pageURL))
+                    guard !Task.isCancelled else { return }
+                    // pageURL is the same constant URL for every document —
+                    // without disabling the cache, WKWebView can serve a
+                    // cached response for it instead of re-invoking the
+                    // scheme handler, showing a previous document's content.
+                    var request = URLRequest(url: PreviewPage.pageURL)
+                    request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+                    webView.load(request)
                 }
             } else if appliedBody != parent.body {
                 appliedBody = parent.body
@@ -127,7 +136,7 @@ struct MarkdownWebView: NSViewRepresentable {
 /// Serves the preview page and, after a containment check, workspace files
 /// (render_document rewrites image sources to absolute paths).
 @MainActor
-private final class AssetSchemeHandler: NSObject, WKURLSchemeHandler {
+final class AssetSchemeHandler: NSObject, WKURLSchemeHandler {
     let page: () -> String?
     let root: () -> URL?
 
