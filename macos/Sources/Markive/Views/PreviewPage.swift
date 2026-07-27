@@ -182,10 +182,10 @@ enum PreviewPage {
         --tok-type: #a2845e;
         --danger: #ff3b30;
         --danger-bg: rgba(255, 59, 48, .1);
-        --glass-bg: rgba(255, 255, 255, .55);
-        --glass-border: rgba(0, 0, 0, .08);
-        --glass-highlight: rgba(255, 255, 255, .9);
-        --glass-shadow: rgba(0, 0, 0, .06);
+        --glass-bg-top: rgba(255, 255, 255, .5);
+        --glass-bg-bottom: rgba(255, 255, 255, .3);
+        --glass-border: rgba(0, 0, 0, .05);
+        --glass-highlight: rgba(255, 255, 255, .5);
     }
     @media (prefers-color-scheme: dark) {
         :root {
@@ -202,10 +202,10 @@ enum PreviewPage {
             --tok-type: #ac8e68;
             --danger: #ff453a;
             --danger-bg: rgba(255, 69, 58, .15);
-            --glass-bg: rgba(255, 255, 255, .06);
-            --glass-border: rgba(255, 255, 255, .12);
-            --glass-highlight: rgba(255, 255, 255, .16);
-            --glass-shadow: rgba(0, 0, 0, .5);
+            --glass-bg-top: rgba(255, 255, 255, .07);
+            --glass-bg-bottom: rgba(255, 255, 255, .02);
+            --glass-border: rgba(255, 255, 255, .07);
+            --glass-highlight: rgba(255, 255, 255, .1);
         }
     }
     * { box-sizing: border-box; }
@@ -240,11 +240,10 @@ enum PreviewPage {
         padding: 1em;
         overflow-x: auto;
         border-radius: 12px;
-        background: var(--glass-bg);
+        background: linear-gradient(180deg, var(--glass-bg-top), var(--glass-bg-bottom));
         backdrop-filter: blur(24px) saturate(180%);
         -webkit-backdrop-filter: blur(24px) saturate(180%);
-        border: 1px solid var(--glass-border);
-        box-shadow: inset 0 1px 0 var(--glass-highlight), 0 1px 2px var(--glass-shadow);
+        box-shadow: inset 0 0 0 .5px var(--glass-border), inset 0 1px 0 var(--glass-highlight);
     }
     pre code { padding: 0; background: none; border-radius: 0; }
     .tok-keyword { color: var(--tok-keyword); }
