@@ -18,6 +18,8 @@ if pkill -f "Markive.app/Contents/MacOS/Markive" 2>/dev/null; then
     while pgrep -f "Markive.app/Contents/MacOS/Markive" >/dev/null; do sleep 0.1; done
 fi
 cp .build/debug/Markive "$app/Contents/MacOS/Markive"
+mkdir -p "$app/Contents/Resources"
+cp Resources/AppIcon.icns "$app/Contents/Resources/AppIcon.icns"
 
 cat > "$app/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -29,6 +31,8 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
 	<!-- Distinct from the released app's codes.darius.markive-native:
 	     LaunchServices resolves a bundle id to one app, and an installed
 	     release would otherwise win over this dev bundle. -->
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
 	<key>CFBundleName</key>
 	<string>Markive</string>
 	<key>CFBundleExecutable</key>
