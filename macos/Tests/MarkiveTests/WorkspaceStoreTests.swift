@@ -157,6 +157,7 @@ private func isolatedDefaults() -> UserDefaults {
         defer { fixture.tearDown() }
         let item = DocumentItem(
             id: FileID(device: 0, inode: 0),
+            diskID: FileID(device: 0, inode: 0),
             url: fixture.root.appendingPathComponent("gone.md"),
             title: "gone",
             relativePath: "gone.md",
@@ -258,6 +259,32 @@ private func isolatedDefaults() -> UserDefaults {
         await store.rescan()
 
         #expect(document.buffer.text == "v2")
+    }
+
+    @MainActor
+    @Test func autosaveKeepsDocumentIdentity() async throws {
+        // NSDocument's safe-save replaces the file (new inode). Identity must
+        // survive it or selection drops on every autosave.
+        let fixture = try FixtureWorkspace(files: [("doc.md", "v1")])
+        defer { fixture.tearDown() }
+        let store = WorkspaceStore(defaults: isolatedDefaults())
+        await store.openWorkspace(at: fixture.root)
+        let original = try #require(store.documents.first)
+        let document = try store.session.document(for: original)
+
+        document.buffer.text = "edited"
+        document.noteEdited()
+        await withCheckedContinuation { continuation in
+            document.autosave(withImplicitCancellability: false) { _ in
+                continuation.resume()
+            }
+        }
+        #expect(try String(contentsOf: original.url, encoding: .utf8) == "edited")
+
+        await store.rescan()
+        #expect(store.documents.count == 1, "the safe-save backup file must not be listed")
+        let after = try #require(store.documents.first)
+        #expect(after.id == original.id, "identity must survive a safe-save inode change")
     }
 
     @MainActor

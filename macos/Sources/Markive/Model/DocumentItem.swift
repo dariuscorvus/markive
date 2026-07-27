@@ -7,7 +7,12 @@ struct FileID: Hashable, Sendable {
 }
 
 struct DocumentItem: Identifiable, Hashable, Sendable {
-    let id: FileID
+    /// Stable document identity. Seeded from the inode, but preserved across
+    /// safe-saves (which replace the file and change the inode) by
+    /// `WorkspaceStore.reconcileIdentities`.
+    var id: FileID
+    /// The file's current device+inode on disk.
+    var diskID: FileID
     var url: URL
     /// Filename without the Markdown extension.
     var title: String
