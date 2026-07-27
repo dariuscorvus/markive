@@ -25,7 +25,7 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
 <plist version="1.0">
 <dict>
 	<key>CFBundleIdentifier</key>
-	<string>codes.darius.markive-prototype</string>
+	<string>codes.darius.markive-native</string>
 	<key>CFBundleName</key>
 	<string>Markive</string>
 	<key>CFBundleExecutable</key>

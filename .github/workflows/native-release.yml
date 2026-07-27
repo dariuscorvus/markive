@@ -1,0 +1,73 @@
+# Native (SwiftUI) app release: an ad-hoc-signed zip on every native-v* tag.
+# The app is unsigned for distribution — after download it needs
+# `xattr -dr com.apple.quarantine`, same as any unsigned bundle. Developer ID
+# signing and notarization can be added by mirroring release.yml when the
+# native app leaves alpha.
+#
+# workflow_dispatch builds and uploads the zip as a run artifact without
+# creating a release — the dry-run path.
+name: Native release
+
+on:
+  push:
+    tags: ["native-v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-26
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - run: brew install xcodegen
+
+      - run: xcodebuild -version
+
+      - name: Build markive-ffi (universal)
+        run: macos/scripts/build-ffi.sh --universal
+
+      - name: Generate project
+        run: xcodegen generate
+        working-directory: macos
+
+      - name: Build app (Release, sandboxed)
+        run: >
+          xcodebuild -project Markive.xcodeproj -scheme Markive
+          -configuration Release -derivedDataPath DerivedData
+          CODE_SIGN_IDENTITY=- build
+        working-directory: macos
+
+      - name: Verify architectures, sandbox entitlement, and zip
+        run: |
+          app=macos/DerivedData/Build/Products/Release/Markive.app
+          lipo -archs "$app/Contents/MacOS/Markive" | tee /dev/stderr | grep -q "x86_64 arm64"
+          codesign -d --entitlements - "$app" | grep -q "com.apple.security.app-sandbox"
+          ditto -c -k --keepParent "$app" Markive-native.zip
+
+      - name: Upload artifact (dry runs)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Markive-native
+          path: Markive-native.zip
+
+      - name: Create prerelease
+        if: startsWith(github.ref, 'refs/tags/native-v')
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --prerelease \
+            --title "Markive native ${GITHUB_REF_NAME#native-}" \
+            --notes "$(cat .github/release-notes/install-unsigned.md)" \
+            Markive-native.zip
+        env:
+          GH_TOKEN: ${{ github.token }}
