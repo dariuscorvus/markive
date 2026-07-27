@@ -242,7 +242,7 @@ enum PreviewPage {
         background: radial-gradient(circle at top left, var(--glass-bg-left), var(--glass-bg-right) 55%);
         backdrop-filter: blur(24px) saturate(180%);
         -webkit-backdrop-filter: blur(24px) saturate(180%);
-        box-shadow: inset 0 0 0 .5px var(--glass-border), inset 0 1px 0 var(--glass-highlight);
+        box-shadow: inset 0 0 0 1px var(--glass-border), inset 0 1px 0 var(--glass-highlight);
     }
     pre { padding: 1em; overflow-x: auto; }
     pre code { padding: 0; background: none; border-radius: 0; }
