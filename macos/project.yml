@@ -16,7 +16,7 @@ targets:
         basedOnDependencyAnalysis: false
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: codes.darius.markive-prototype
+        PRODUCT_BUNDLE_IDENTIFIER: codes.darius.markive-native
         SWIFT_VERSION: "6.0"
         SWIFT_INCLUDE_PATHS: $(SRCROOT)/Sources/CMarkiveFFI/include
         LIBRARY_SEARCH_PATHS: $(SRCROOT)/.libs
