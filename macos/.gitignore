@@ -1,5 +1,6 @@
 .build/
 .swiftpm/
+.libs/
 Markive.xcodeproj/
 Info.plist
 DerivedData/

@@ -10,10 +10,17 @@ targets:
     type: application
     platform: macOS
     sources: [Sources/Markive]
+    preBuildScripts:
+      - name: Build markive-ffi
+        script: scripts/build-ffi.sh
+        basedOnDependencyAnalysis: false
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: codes.darius.markive-prototype
         SWIFT_VERSION: "6.0"
+        SWIFT_INCLUDE_PATHS: $(SRCROOT)/Sources/CMarkiveFFI/include
+        LIBRARY_SEARCH_PATHS: $(SRCROOT)/.libs
+        OTHER_LDFLAGS: -lmarkive_ffi
       configs:
         # Sandbox enforced only for Release: Debug keeps `run.sh <path>` and
         # headless --workspace launches working on arbitrary paths.

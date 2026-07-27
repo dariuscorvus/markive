@@ -1,0 +1,4 @@
+module CMarkiveFFI {
+    header "markive_ffi.h"
+    export *
+}
