@@ -25,7 +25,10 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
 <plist version="1.0">
 <dict>
 	<key>CFBundleIdentifier</key>
-	<string>codes.darius.markive-native</string>
+	<string>codes.darius.markive-dev</string>
+	<!-- Distinct from the released app's codes.darius.markive-native:
+	     LaunchServices resolves a bundle id to one app, and an installed
+	     release would otherwise win over this dev bundle. -->
 	<key>CFBundleName</key>
 	<string>Markive</string>
 	<key>CFBundleExecutable</key>

@@ -5,41 +5,108 @@ import Observation
 /// autosave in place, the system "ask to keep changes" close behavior, change
 /// counting, and quit-time saving via NSDocumentController — none of it
 /// reimplemented here.
+///
+/// The text lives in an NSTextStorage that editor views attach to directly —
+/// two windows editing the same document share the storage. Undo registers on
+/// the document's undo manager (the editor delegates to it), which also feeds
+/// NSDocument's automatic change counting: undoing back to the saved state
+/// reads as not-dirty.
 final class MarkdownDocument: NSDocument {
-    /// SwiftUI-observable text buffer. `nonisolated` opts out of @Observable's
-    /// inferred @MainActor so NSDocument's nonisolated read/write callbacks can
-    /// reach it — everything still runs on main, since the document does not
-    /// enable asynchronous saving. The property is nonisolated(unsafe) for the
-    /// same reason: NSDocument is @MainActor in the macOS 26 SDK, but
-    /// read(from:)/data(ofType:) are nonisolated.
+    /// SwiftUI-observable face of the document. `nonisolated` opts out of
+    /// @Observable's inferred @MainActor so NSDocument's nonisolated
+    /// read/write callbacks can reach it — everything still runs on main,
+    /// since the document does not enable asynchronous saving.
     @Observable
     nonisolated final class Buffer {
-        var text = ""
+        /// Bumped on every character edit; reading `text` tracks it, so views
+        /// observing `text` invalidate on edits without the document copying
+        /// the string per keystroke.
+        fileprivate(set) var revision = 0
         /// The file changed on disk while local edits are unsaved; the UI
         /// offers Reload / Keep My Version.
         var hasConflict = false
+        fileprivate weak var document: MarkdownDocument?
+
+        var text: String {
+            _ = revision
+            guard let document else { return "" }
+            return document.textStorage.string
+        }
     }
 
-    nonisolated(unsafe) let buffer = Buffer()
+    // Main-thread-confined by the no-async-saving contract. Buffer's
+    // @unchecked Sendable exists only so the storage-edit notification
+    // closure may capture it.
+    nonisolated(unsafe) let textStorage = NSTextStorage()
+    let buffer = Buffer()
+    nonisolated(unsafe) private var storageObserver: NSObjectProtocol?
+    /// Set around disk-driven storage replacement (open, revert) so those
+    /// edits don't mark the document dirty.
+    nonisolated(unsafe) private var isReloadingFromDisk = false
 
     static let markdownType = "net.daringfireball.markdown"
 
     override class var autosavesInPlace: Bool { true }
 
+    override init() {
+        super.init()
+        buffer.document = self
+        // NSTextStorage.didProcessEditingNotification fires after every edit,
+        // view-driven or programmatic, on the mutating thread (main here).
+        storageObserver = NotificationCenter.default.addObserver(
+            forName: NSTextStorage.didProcessEditingNotification,
+            object: textStorage,
+            queue: nil
+        ) { [weak self] notification in
+            guard let self,
+                  let storage = notification.object as? NSTextStorage,
+                  storage.editedMask.contains(.editedCharacters) else { return }
+            self.buffer.revision += 1
+            // Change-count safety net: typing counts via undo registration,
+            // but storage mutations that bypass undo (accessibility writes,
+            // programmatic edits) must still schedule autosave. Harmlessly
+            // approximate — with autosave-in-place, an over-counted dirty
+            // state never surfaces to the user.
+            guard !self.isReloadingFromDisk else { return }
+            MainActor.assumeIsolated {
+                if !self.hasUnautosavedChanges {
+                    self.updateChangeCount(.changeDone)
+                }
+            }
+        }
+    }
+
+    deinit {
+        if let storageObserver {
+            NotificationCenter.default.removeObserver(storageObserver)
+        }
+    }
+
     override func read(from data: Data, ofType typeName: String) throws {
         guard let text = String(data: data, encoding: .utf8) else {
             throw CocoaError(.fileReadInapplicableStringEncoding)
         }
-        buffer.text = text
+        // Direct storage replacement: registers no undo (opens and reverts
+        // must not be undoable) and must not mark the document dirty.
+        isReloadingFromDisk = true
+        defer { isReloadingFromDisk = false }
+        textStorage.replaceCharacters(
+            in: NSRange(location: 0, length: textStorage.length),
+            with: text
+        )
     }
 
     override func data(ofType typeName: String) throws -> Data {
-        Data(buffer.text.utf8)
+        Data(textStorage.string.utf8)
     }
 
-    /// Called from the editor binding on every edit; schedules autosave.
-    func noteEdited() {
-        updateChangeCount(.changeDone)
+    /// Programmatic whole-text replacement (model operations, tests). The
+    /// storage-edit observer handles change counting.
+    func replaceText(_ text: String) {
+        textStorage.replaceCharacters(
+            in: NSRange(location: 0, length: textStorage.length),
+            with: text
+        )
     }
 
     // MARK: - External changes
@@ -82,3 +149,5 @@ final class MarkdownDocument: NSDocument {
         save(nil)
     }
 }
+
+extension MarkdownDocument.Buffer: @unchecked Sendable {}

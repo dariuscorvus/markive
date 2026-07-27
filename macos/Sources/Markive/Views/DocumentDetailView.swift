@@ -94,9 +94,11 @@ struct DocumentDetailView: View {
             // Unconditional so the toolbar structure never rebuilds mid-typing:
             // conditional toolbar content re-hosts the search field and can
             // detach it from its binding, like the List/empty-state swap did.
-            ShareLink(item: model.openedDocument?.document?.buffer.text ?? "")
-                .disabled(model.openedDocument?.document == nil)
-                .help("Share the document text")
+            // Shares the file itself — sharing the text would copy the whole
+            // buffer on every body evaluation, which 20 MB documents punish.
+            ShareLink(item: model.selectedDocument?.url ?? URL(fileURLWithPath: "/dev/null"))
+                .disabled(model.selectedDocument == nil)
+                .help("Share the document")
             Button {
                 model.isInspectorPresented.toggle()
             } label: {
@@ -165,12 +167,12 @@ private struct DocumentContentView: View {
         case .editor:
             MarkdownEditorView(document: openDocument)
         case .preview:
-            MarkdownPreviewView(model: model, document: document, text: openDocument.buffer.text)
+            MarkdownPreviewView(model: model, document: document, openDocument: openDocument)
         case .editorAndPreview:
             HSplitView {
                 MarkdownEditorView(document: openDocument)
                     .frame(minWidth: 200)
-                MarkdownPreviewView(model: model, document: document, text: openDocument.buffer.text)
+                MarkdownPreviewView(model: model, document: document, openDocument: openDocument)
                     .frame(minWidth: 200)
             }
         }

@@ -3,11 +3,12 @@ import AppKit
 
 /// Rendered Markdown via markive-core → WKWebView. Re-renders live as the
 /// buffer changes (debounced); the web view swaps content in place so the
-/// scroll position survives.
+/// scroll position survives. Observes the buffer's revision counter, not the
+/// text — the string is only copied when a render actually runs.
 struct MarkdownPreviewView: View {
     @Bindable var model: WorkspaceModel
     var document: DocumentItem
-    var text: String
+    var openDocument: MarkdownDocument
 
     @State private var bodyHTML: String?
     @State private var renderTask: Task<Void, Never>?
@@ -29,14 +30,14 @@ struct MarkdownPreviewView: View {
             }
         }
         .task(id: document.id) {
-            bodyHTML = await render(text)
+            bodyHTML = await render(openDocument.buffer.text)
         }
-        .onChange(of: text) { _, newText in
+        .onChange(of: openDocument.buffer.revision) {
             renderTask?.cancel()
             renderTask = Task {
                 try? await Task.sleep(for: .milliseconds(250))
                 guard !Task.isCancelled else { return }
-                bodyHTML = await render(newText)
+                bodyHTML = await render(openDocument.buffer.text)
             }
         }
         .accessibilityLabel("Markdown preview")
