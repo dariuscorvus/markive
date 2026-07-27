@@ -9,6 +9,10 @@
 
 A native macOS Markdown viewer and editor. Open a `.md` from Finder and it renders. Hit ⌘2 and it's an editor. Open a folder and it becomes a root — no project setup, no workspace file, no Electron.
 
+## Status
+
+Active development happens in the native SwiftUI app in [`macos/`](macos/). The Tauri app below is feature-frozen: it keeps working, bug fixes only. The parser core in `crates/markive-core` carries over to the native app.
+
 ## What it is
 
 - **Viewer first.** Rendered, Source, and Split views (⌘1/⌘2/⌘3). GitHub-style heading anchors, tables, task lists, fenced code. Local images and relative links resolve — including images written as raw HTML, the way READMEs do it.
