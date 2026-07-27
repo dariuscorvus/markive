@@ -3,7 +3,6 @@ import AppKit
 
 struct DocumentListView: View {
     @Bindable var model: WorkspaceModel
-    @State private var documentPendingTrash: PrototypeDocument?
 
     var body: some View {
         // The List must stay in the hierarchy permanently: swapping it out for an
@@ -16,13 +15,13 @@ struct DocumentListView: View {
             .searchable(text: $model.searchText, prompt: "Search documents")
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
+                    // Document creation arrives with the editing layer.
                     Button {
-                        model.newDocument()
                     } label: {
                         Label("New Document", systemImage: "square.and.pencil")
                     }
-                    .disabled(model.workspaceName == nil)
-                    .help("Create a new Markdown document (⌘N)")
+                    .disabled(true)
+                    .help("Creating documents is not available yet")
                 }
                 ToolbarItem {
                     Menu {
@@ -38,41 +37,27 @@ struct DocumentListView: View {
                     .help("Change how documents are sorted")
                 }
             }
-            .confirmationDialog(
-                "Move “\(documentPendingTrash?.title ?? "")” to the Trash?",
-                isPresented: Binding(
-                    get: { documentPendingTrash != nil },
-                    set: { if !$0 { documentPendingTrash = nil } }
-                ),
-                titleVisibility: .visible
-            ) {
-                Button("Move to Trash", role: .destructive) {
-                    if let document = documentPendingTrash { model.remove(document) }
-                    documentPendingTrash = nil
-                }
-                Button("Cancel", role: .cancel) { documentPendingTrash = nil }
-            } message: {
-                Text("The document is removed from the prototype's in-memory store only.")
-            }
     }
 
     @ViewBuilder
     private var emptyStateOverlay: some View {
-        if model.workspaceName == nil {
-            ContentUnavailableView(
-                "No Workspace",
-                systemImage: "archivebox",
-                description: Text("Open a workspace to browse its documents.")
-            )
+        if !model.isWorkspaceOpen {
+            ContentUnavailableView {
+                Label("No Workspace", systemImage: "archivebox")
+            } description: {
+                Text("Open a folder of Markdown files to browse it.")
+            } actions: {
+                Button("Open Workspace…") { model.isWorkspaceImporterPresented = true }
+            }
+        } else if model.store.isLoading && model.store.documents.isEmpty {
+            ProgressView()
         } else if model.visibleDocuments.isEmpty {
             if model.searchText.isEmpty {
-                ContentUnavailableView {
-                    Label("No Documents", systemImage: "doc")
-                } description: {
-                    Text("This collection has no Markdown documents.")
-                } actions: {
-                    Button("Create Document") { model.newDocument() }
-                }
+                ContentUnavailableView(
+                    "No Documents",
+                    systemImage: "doc",
+                    description: Text("This collection has no Markdown documents.")
+                )
             } else {
                 ContentUnavailableView.search(text: model.searchText)
             }
@@ -84,25 +69,21 @@ struct DocumentListView: View {
             ForEach(model.visibleDocuments) { document in
                 DocumentRow(document: document)
                     .tag(document.id)
-                    .draggable(document.path)
+                    .draggable(document.url)
                     .contextMenu {
-                        Button(document.isFavorite ? "Remove from Favorites" : "Add to Favorites") {
-                            model.store.toggleFavorite(id: document.id)
-                        }
                         Button("Copy Path") {
                             NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(document.path, forType: .string)
+                            NSPasteboard.general.setString(document.url.path, forType: .string)
                         }
-                        Divider()
-                        Button("Move to Trash", role: .destructive) {
-                            documentPendingTrash = document
+                        Button("Show in Finder") {
+                            NSWorkspace.shared.activateFileViewerSelecting([document.url])
                         }
                     }
             }
         }
     }
 
-    private var selectionBinding: Binding<Set<PrototypeDocument.ID>> {
+    private var selectionBinding: Binding<Set<FileID>> {
         Binding(
             get: { model.documentSelection },
             set: { model.setDocumentSelection($0) }
@@ -111,36 +92,14 @@ struct DocumentListView: View {
 }
 
 struct DocumentRow: View {
-    var document: PrototypeDocument
+    var document: DocumentItem
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline) {
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 4) {
-                    Text(document.title)
-                    if document.status != .ok {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .foregroundStyle(.orange)
-                            .imageScale(.small)
-                            .accessibilityLabel("Needs attention")
-                    }
-                }
-                Text("\(document.folder) · \(document.modifiedAt.formatted(.relative(presentation: .named)))")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                if !document.tags.isEmpty {
-                    Text(document.tags.map { "#\($0)" }.joined(separator: "  "))
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
-            }
-            Spacer()
-            if document.isFavorite {
-                Image(systemName: "star.fill")
-                    .foregroundStyle(.yellow)
-                    .imageScale(.small)
-                    .accessibilityLabel("Favorite")
-            }
+        VStack(alignment: .leading, spacing: 2) {
+            Text(document.title)
+            Text("\(document.folderLabel) · \(document.modifiedAt.formatted(.relative(presentation: .named)))")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
         .padding(.vertical, 2)
     }

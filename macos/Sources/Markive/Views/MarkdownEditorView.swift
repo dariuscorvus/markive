@@ -1,13 +1,19 @@
 import SwiftUI
 
-/// Placeholder for the real Markdown editor (TextKit 2 spike comes later).
-/// Plain `TextEditor` on the standard content background — no glass here.
+/// Read-only Markdown source view. Becomes an editable NSDocument-backed
+/// editor in the editing layer — read-only here so nothing pretends to save.
 struct MarkdownEditorView: View {
-    @Binding var text: String
+    var text: String
 
     var body: some View {
-        TextEditor(text: $text)
-            .font(.system(.body, design: .monospaced))
-            .accessibilityLabel("Markdown source editor")
+        ScrollView {
+            Text(text)
+                .font(.system(.body, design: .monospaced))
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding()
+        }
+        .background(.background)
+        .accessibilityLabel("Markdown source")
     }
 }

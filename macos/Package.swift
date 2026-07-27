@@ -8,6 +8,11 @@ let package = Package(
         .executableTarget(
             name: "Markive",
             path: "Sources/Markive"
-        )
+        ),
+        .testTarget(
+            name: "MarkiveTests",
+            dependencies: ["Markive"],
+            path: "Tests/MarkiveTests"
+        ),
     ]
 )

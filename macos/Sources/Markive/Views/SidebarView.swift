@@ -3,24 +3,23 @@ import SwiftUI
 struct SidebarView: View {
     @Bindable var model: WorkspaceModel
     @State private var foldersExpanded = true
-    @State private var tagsExpanded = true
 
     var body: some View {
         Group {
-            if model.workspaceName == nil {
-                ContentUnavailableView {
-                    Label("No Workspace", systemImage: "archivebox")
-                } description: {
-                    Text("Open a workspace to see its folders and tags.")
-                } actions: {
-                    Button("Open Workspace…") { model.openSampleWorkspace() }
-                }
-            } else {
+            if model.isWorkspaceOpen {
                 List(selection: $model.sidebarSelection) {
                     librarySection
                     workspaceSection
-                    locationsSection
                     savedSearchesSection
+                    recentWorkspacesSection
+                }
+            } else {
+                ContentUnavailableView {
+                    Label("No Workspace", systemImage: "archivebox")
+                } description: {
+                    Text("Open a folder of Markdown files to browse it.")
+                } actions: {
+                    Button("Open Workspace…") { model.isWorkspaceImporterPresented = true }
                 }
             }
         }
@@ -34,9 +33,6 @@ struct SidebarView: View {
                 .badge(model.store.documents.count)
             Label("Recent", systemImage: "clock")
                 .tag(SidebarItem.recent)
-            Label("Favorites", systemImage: "star")
-                .tag(SidebarItem.favorites)
-                .badge(model.store.favoriteCount)
         }
     }
 
@@ -52,23 +48,6 @@ struct SidebarView: View {
             } label: {
                 Label("Folders", systemImage: "folder")
             }
-            DisclosureGroup(isExpanded: $tagsExpanded) {
-                ForEach(model.store.allTags, id: \.self) { tag in
-                    Label(tag, systemImage: "number")
-                        .tag(SidebarItem.tag(tag))
-                }
-            } label: {
-                Label("Tags", systemImage: "tag")
-            }
-        }
-    }
-
-    private var locationsSection: some View {
-        Section("Locations") {
-            ForEach(DocumentLocation.allCases) { location in
-                Label(location.rawValue, systemImage: location.systemImage)
-                    .tag(SidebarItem.location(location))
-            }
         }
     }
 
@@ -77,6 +56,20 @@ struct SidebarView: View {
             ForEach(SavedSearch.allCases) { search in
                 Label(search.rawValue, systemImage: search.systemImage)
                     .tag(SidebarItem.savedSearch(search))
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var recentWorkspacesSection: some View {
+        let others = model.store.recentWorkspaces.filter { $0.canonicalPath != model.store.rootURL?.canonicalPath }
+        if !others.isEmpty {
+            Section("Recent Workspaces") {
+                ForEach(others, id: \.path) { url in
+                    Label(url.lastPathComponent, systemImage: "folder.badge.gearshape")
+                        .tag(SidebarItem.recentWorkspace(url))
+                        .help(url.path)
+                }
             }
         }
     }

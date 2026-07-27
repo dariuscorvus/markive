@@ -3,7 +3,7 @@ import SwiftUI
 @main
 struct MarkiveApp: App {
     /// Shared across windows; each window keeps its own navigation state.
-    @State private var store = PrototypeStore.sample()
+    @State private var store = MarkiveApp.makeStore()
 
     var body: some Scene {
         WindowGroup(id: "main") {
@@ -13,5 +13,18 @@ struct MarkiveApp: App {
         .commands {
             AppCommands()
         }
+    }
+
+    /// `--workspace <path>` opens a workspace at launch instead of restoring the
+    /// most recent one — for development and headless verification.
+    private static func makeStore() -> WorkspaceStore {
+        let store = WorkspaceStore()
+        let arguments = ProcessInfo.processInfo.arguments
+        if let flag = arguments.firstIndex(of: "--workspace"),
+           arguments.indices.contains(flag + 1) {
+            let url = URL(fileURLWithPath: arguments[flag + 1], isDirectory: true)
+            Task { await store.openWorkspace(at: url) }
+        }
+        return store
     }
 }
