@@ -10,16 +10,25 @@ struct MarkdownPreviewView: View {
     var document: DocumentItem
     var openDocument: MarkdownDocument
 
-    @State private var bodyHTML: String?
+    /// The (id, title, HTML) of the last completed render, held together so
+    /// MarkdownWebView never sees a documentID from one document paired
+    /// with body HTML from another. `document.id` updates the instant the
+    /// selection changes, but rendering is async — without this pairing,
+    /// switching documents would briefly hand MarkdownWebView the new id
+    /// with the previous document's stale HTML, which it would then load
+    /// as if it were the new document's real content. Holding the old pair
+    /// until the new one is fully ready also avoids a ProgressView flash
+    /// on every switch.
+    @State private var rendered: (id: FileID, title: String, html: String)?
     @State private var renderTask: Task<Void, Never>?
 
     var body: some View {
         Group {
-            if let bodyHTML {
+            if let rendered {
                 MarkdownWebView(
-                    documentID: document.id,
-                    title: document.title,
-                    body: bodyHTML,
+                    documentID: rendered.id,
+                    title: rendered.title,
+                    body: rendered.html,
                     workspaceRoot: { [store = model.store] in store.rootURL },
                     onOpenLocalMarkdown: { path in
                         model.openDocument(atAbsolutePath: path)
@@ -30,14 +39,16 @@ struct MarkdownPreviewView: View {
             }
         }
         .task(id: document.id) {
-            bodyHTML = await render(openDocument.buffer.text)
+            let html = await render(openDocument.buffer.text)
+            rendered = (document.id, document.title, html)
         }
         .onChange(of: openDocument.buffer.revision) {
             renderTask?.cancel()
             renderTask = Task {
                 try? await Task.sleep(for: .milliseconds(250))
                 guard !Task.isCancelled else { return }
-                bodyHTML = await render(openDocument.buffer.text)
+                let html = await render(openDocument.buffer.text)
+                rendered = (document.id, document.title, html)
             }
         }
         .accessibilityLabel("Markdown preview")
