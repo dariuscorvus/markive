@@ -235,16 +235,16 @@ enum PreviewPage {
     code { padding: .2em .4em; background: var(--code-bg); }
     /* Liquid Glass approximation: WKWebView content can't use a real
        NSVisualEffectView material, so blur + saturate + a translucent
-       tint + a glossy inner edge stand in for it. */
-    pre {
-        padding: 1em;
-        overflow-x: auto;
+       tint + a glossy inner edge stand in for it. Shared by code fences
+       and rendered Mermaid diagrams — both read as the same glass panel. */
+    pre, .mermaid-diagram {
         border-radius: 12px;
         background: radial-gradient(circle at top left, var(--glass-bg-left), var(--glass-bg-right) 55%);
         backdrop-filter: blur(24px) saturate(180%);
         -webkit-backdrop-filter: blur(24px) saturate(180%);
-        box-shadow: inset 0 0 0 .5px var(--glass-border), inset 0 1px 0 var(--glass-highlight);
+        box-shadow: inset 0 0 0 1px var(--glass-border), inset 0 1px 0 var(--glass-highlight);
     }
+    pre { padding: 1em; overflow-x: auto; }
     pre code { padding: 0; background: none; border-radius: 0; }
     .tok-keyword { color: var(--tok-keyword); }
     .tok-string { color: var(--tok-string); }
@@ -254,7 +254,7 @@ enum PreviewPage {
     .tok-type { color: var(--tok-type); }
     .mermaid-block { margin: 0 0 1em; }
     .mermaid-block pre { margin: 0 0 .5em; }
-    .mermaid-diagram { display: flex; justify-content: center; overflow-x: auto; }
+    .mermaid-diagram { display: flex; justify-content: center; overflow-x: auto; padding: 1em; }
     .mermaid-diagram svg { max-width: 100%; height: auto; }
     .mermaid-error {
         margin: 0 0 .5em;
