@@ -1,0 +1,51 @@
+# xcodegen spec — `xcodegen generate` produces Markive.xcodeproj (gitignored).
+# SwiftPM (Package.swift + run.sh) remains the CLI build path; this target is
+# for Xcode work and for release packaging with the sandbox on.
+name: Markive
+options:
+  deploymentTarget:
+    macOS: "26.0"
+targets:
+  Markive:
+    type: application
+    platform: macOS
+    sources: [Sources/Markive]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: codes.darius.markive-prototype
+        SWIFT_VERSION: "6.0"
+      configs:
+        # Sandbox enforced only for Release: Debug keeps `run.sh <path>` and
+        # headless --workspace launches working on arbitrary paths.
+        Release:
+          CODE_SIGN_ENTITLEMENTS: Markive.entitlements
+    info:
+      path: Info.plist
+      properties:
+        CFBundleName: Markive
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        LSMinimumSystemVersion: "26.0"
+        NSHighResolutionCapable: true
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: Markdown Document
+            CFBundleTypeRole: Editor
+            LSItemContentTypes: [net.daringfireball.markdown]
+  MarkiveTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources: [Tests/MarkiveTests]
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+    dependencies:
+      - target: Markive
+schemes:
+  Markive:
+    build:
+      targets:
+        Markive: all
+    run:
+      config: Debug
+    test:
+      targets: [MarkiveTests]
