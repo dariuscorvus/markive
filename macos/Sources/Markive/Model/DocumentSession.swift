@@ -50,4 +50,14 @@ final class DocumentSession {
     func updateURL(id: FileID, to url: URL) {
         open[id]?.fileURL = url
     }
+
+    /// Reconcile every open document with the disk. Driven by the FSEvents
+    /// rescan: NSFilePresenter callbacks don't fire reliably for uncoordinated
+    /// writers (a plain `echo >>` from a shell), so the watcher is the source
+    /// of truth and the presenter path is only a fast path.
+    func checkExternalChanges() {
+        for document in open.values {
+            document.checkExternalChange()
+        }
+    }
 }

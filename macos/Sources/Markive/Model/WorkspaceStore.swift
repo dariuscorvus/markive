@@ -21,6 +21,7 @@ final class WorkspaceStore {
     private var securityScopedRoot: URL?
     private var scanGeneration = 0
     private var didAttemptRestore = false
+    private var watcher: WorkspaceWatcher?
 
     static let recentBookmarksKey = "recentWorkspaceBookmarks"
     static let maxRecents = 5
@@ -56,6 +57,53 @@ final class WorkspaceStore {
         folderTree = snapshot.folders
         documents = snapshot.documents
         isLoading = false
+
+        watcher = WorkspaceWatcher(root: root) { [weak self] in
+            Task { @MainActor in await self?.rescan() }
+        }
+    }
+
+    /// Re-scan after filesystem changes (FSEvents). Inode identity keeps
+    /// selection and open documents stable across external renames.
+    func rescan() async {
+        guard let rootURL, let rootName else { return }
+        scanGeneration += 1
+        let generation = scanGeneration
+        let snapshot = await Task.detached(priority: .utility) {
+            Self.scan(root: rootURL, rootName: rootName)
+        }.value
+        guard generation == scanGeneration else { return }
+        folderTree = snapshot.folders
+        documents = Self.reconcileIdentities(old: documents, new: snapshot.documents)
+
+        // Point open documents at their current path (external rename), then
+        // let them reconcile content with the disk.
+        for item in documents {
+            if let document = session.openDocument(id: item.id),
+               document.fileURL?.path != item.url.path {
+                session.updateURL(id: item.id, to: item.url)
+            }
+        }
+        session.checkExternalChanges()
+    }
+
+    /// Carries stable identities across a rescan. An unchanged or renamed file
+    /// matches by inode; a safe-saved file (same path, replaced inode — every
+    /// NSDocument autosave does this) matches by path.
+    nonisolated static func reconcileIdentities(old: [DocumentItem], new: [DocumentItem]) -> [DocumentItem] {
+        let oldByDiskID = Dictionary(old.map { ($0.diskID, $0) }, uniquingKeysWith: { a, _ in a })
+        let oldByPath = Dictionary(old.map { ($0.relativePath, $0) }, uniquingKeysWith: { a, _ in a })
+        let inodeMatchedIDs = Set(new.compactMap { oldByDiskID[$0.diskID]?.id })
+        return new.map { item in
+            var item = item
+            if let match = oldByDiskID[item.diskID] {
+                item.id = match.id
+            } else if let previous = oldByPath[item.relativePath],
+                      !inodeMatchedIDs.contains(previous.id) {
+                item.id = previous.id
+            }
+            return item
+        }
     }
 
     /// Reopen the most recent workspace on launch. No-op if a workspace is already
@@ -121,9 +169,11 @@ final class WorkspaceStore {
         session.updateURL(id: item.id, to: newURL)
 
         guard let rootURL,
-              let updated = Self.item(at: newURL, root: rootURL, rootName: rootName ?? "") else {
+              var updated = Self.item(at: newURL, root: rootURL, rootName: rootName ?? "") else {
             throw CocoaError(.fileReadUnknown)
         }
+        // The stable identity carries over; only the disk inode is re-read.
+        updated.id = item.id
         if let index = documents.firstIndex(where: { $0.id == item.id }) {
             documents[index] = updated
         }
@@ -154,6 +204,7 @@ final class WorkspaceStore {
             : ""
         return DocumentItem(
             id: FileID(device: device, inode: inode),
+            diskID: FileID(device: device, inode: inode),
             url: resolved,
             title: resolved.deletingPathExtension().lastPathComponent,
             relativePath: relativePath,
@@ -242,6 +293,10 @@ final class WorkspaceStore {
             }
 
             guard markdownExtensions.contains(resolved.pathExtension.lowercased()) else { continue }
+            // Skip "name~.md" backups: NSDocument's safe-save briefly renames
+            // the original file to one, and if scanned it inherits the old
+            // inode and steals the document's identity.
+            guard !resolved.deletingPathExtension().lastPathComponent.hasSuffix("~") else { continue }
             if let item = item(at: resolved, root: root, rootName: rootName) {
                 documents.append(item)
             }

@@ -61,4 +61,9 @@ PLIST
 # code-signing monitor (Taskgated Invalid Signature).
 codesign --force --sign - "$app"
 
-open "$app"
+# Optional: run.sh <folder> opens that folder as the workspace.
+if [[ $# -ge 1 ]]; then
+    open "$app" --args --workspace "$(cd "$1" && pwd)"
+else
+    open "$app"
+fi
