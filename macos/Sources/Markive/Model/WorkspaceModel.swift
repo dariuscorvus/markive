@@ -285,6 +285,14 @@ final class WorkspaceModel {
         store.toggleFavorite(item)
     }
 
+    /// Open a workspace document by absolute path — preview links arrive this
+    /// way because render_document resolves local targets to absolute paths.
+    func openDocument(atAbsolutePath path: String) {
+        let canonical = URL(fileURLWithPath: path).canonicalPath
+        guard let item = store.documents.first(where: { $0.url.path == canonical }) else { return }
+        open(item)
+    }
+
     func open(_ document: DocumentItem) {
         setDocumentSelection([document.id])
         if !visibleDocuments.contains(where: { $0.id == document.id }) {
