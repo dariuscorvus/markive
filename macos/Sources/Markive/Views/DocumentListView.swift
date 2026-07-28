@@ -39,6 +39,18 @@ struct DocumentListView: View {
                     }
                     .help("Change how documents are sorted")
                 }
+                ToolbarItem {
+                    Picker("List Style", selection: $model.documentListStyle) {
+                        ForEach(DocumentListStyle.allCases) { style in
+                            Label(style.label, systemImage: style.systemImage)
+                                .accessibilityLabel(style.label)
+                                .tag(style)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .disabled(!model.isHierarchicalScope)
+                    .help("Switch between a flat list and a folder tree")
+                }
             }
             .alert(
                 "Rename “\(renameTarget?.title ?? "")”",
@@ -97,35 +109,54 @@ struct DocumentListView: View {
         }
     }
 
+    @ViewBuilder
     private var documentList: some View {
-        List(selection: selectionBinding) {
-            ForEach(model.visibleDocuments) { document in
-                DocumentRow(document: document, isFavorite: model.store.isFavorite(document))
-                    .tag(document.id)
-                    .draggable(document.url)
-                    .contextMenu {
-                        Button(model.store.isFavorite(document) ? "Remove from Favorites" : "Add to Favorites") {
-                            model.store.toggleFavorite(document)
-                        }
-                        Button("Rename…") {
-                            renameTitle = document.title
-                            renameTarget = document
-                        }
-                        Divider()
-                        Button("Copy Path") {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(document.url.path, forType: .string)
-                        }
-                        Button("Show in Finder") {
-                            NSWorkspace.shared.activateFileViewerSelecting([document.url])
-                        }
-                        Divider()
-                        Button("Move to Trash", role: .destructive) {
-                            documentPendingTrash = document
-                        }
+        switch model.effectiveDocumentListStyle {
+        case .list:
+            List(selection: selectionBinding) {
+                ForEach(model.visibleDocuments) { document in
+                    documentRow(document)
+                }
+            }
+        case .tree:
+            List(selection: selectionBinding) {
+                OutlineGroup(model.documentTree, children: \.children) { node in
+                    if let document = node.document {
+                        documentRow(document)
+                    } else {
+                        Label(node.name, systemImage: "folder")
                     }
+                }
             }
         }
+    }
+
+    @ViewBuilder
+    private func documentRow(_ document: DocumentItem) -> some View {
+        DocumentRow(document: document, isFavorite: model.store.isFavorite(document))
+            .tag(document.id)
+            .draggable(document.url)
+            .contextMenu {
+                Button(model.store.isFavorite(document) ? "Remove from Favorites" : "Add to Favorites") {
+                    model.store.toggleFavorite(document)
+                }
+                Button("Rename…") {
+                    renameTitle = document.title
+                    renameTarget = document
+                }
+                Divider()
+                Button("Copy Path") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(document.url.path, forType: .string)
+                }
+                Button("Show in Finder") {
+                    NSWorkspace.shared.activateFileViewerSelecting([document.url])
+                }
+                Divider()
+                Button("Move to Trash", role: .destructive) {
+                    documentPendingTrash = document
+                }
+            }
     }
 
     private var selectionBinding: Binding<Set<FileID>> {
