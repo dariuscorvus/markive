@@ -50,6 +50,36 @@ enum DocumentSortOrder: String, CaseIterable, Identifiable {
     }
 }
 
+enum DocumentListStyle: String, CaseIterable, Identifiable {
+    case list
+    case tree
+
+    var id: Self { self }
+
+    var label: String {
+        switch self {
+        case .list: "List"
+        case .tree: "Tree"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .list: "list.bullet"
+        case .tree: "list.bullet.indent"
+        }
+    }
+}
+
+/// A node in the folder+document tree shown by `DocumentListView` in tree
+/// mode — either a folder (no `document`) or a document leaf (no `children`).
+struct DocumentTreeNode: Identifiable {
+    var id: String
+    var name: String
+    var document: DocumentItem?
+    var children: [DocumentTreeNode]?
+}
+
 /// The single selected document, opened through the shared NSDocument session.
 struct OpenedDocument {
     enum State {
@@ -97,6 +127,7 @@ final class WorkspaceModel {
     private(set) var standaloneDocument: DocumentItem?
     var presentation: DetailPresentation = .preview
     var sortOrder: DocumentSortOrder = .dateModified
+    var documentListStyle: DocumentListStyle = .list
     var searchText = ""
     var isInspectorPresented = false
     var isQuickOpenPresented = false
@@ -213,6 +244,68 @@ final class WorkspaceModel {
         case .title:
             return documents.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
         }
+    }
+
+    /// Recent/Favorites/Saved Searches mix documents from anywhere in the
+    /// workspace — a nested tree wouldn't reflect a real folder structure
+    /// there, so tree mode only applies to genuinely hierarchical scopes.
+    var isHierarchicalScope: Bool {
+        switch sidebarSelection {
+        case .allDocuments, .workspaceRoot, .folder: true
+        default: false
+        }
+    }
+
+    var effectiveDocumentListStyle: DocumentListStyle {
+        isHierarchicalScope ? documentListStyle : .list
+    }
+
+    /// `visibleDocuments` nested into folders, for `DocumentListView`'s tree mode.
+    var documentTree: [DocumentTreeNode] {
+        var roots: [DocumentTreeNode] = []
+        for document in visibleDocuments {
+            let components = document.relativeFolder.isEmpty
+                ? [] : document.relativeFolder.components(separatedBy: "/")
+            Self.insertDocument(document, components: components, into: &roots, prefix: "")
+        }
+        return Self.sortedTree(roots)
+    }
+
+    private static func insertDocument(
+        _ document: DocumentItem,
+        components: [String],
+        into nodes: inout [DocumentTreeNode],
+        prefix: String
+    ) {
+        guard let head = components.first else {
+            nodes.append(DocumentTreeNode(id: "doc:\(document.relativePath)", name: document.title, document: document))
+            return
+        }
+        let id = prefix.isEmpty ? head : "\(prefix)/\(head)"
+        let rest = Array(components.dropFirst())
+        if let index = nodes.firstIndex(where: { $0.id == id && $0.document == nil }) {
+            var children = nodes[index].children ?? []
+            insertDocument(document, components: rest, into: &children, prefix: id)
+            nodes[index].children = children
+        } else {
+            var node = DocumentTreeNode(id: id, name: head, document: nil, children: [])
+            insertDocument(document, components: rest, into: &node.children!, prefix: id)
+            nodes.append(node)
+        }
+    }
+
+    /// Folders first (alphabetical), then documents in their existing —
+    /// already `sortOrder`-sorted — relative order.
+    private static func sortedTree(_ nodes: [DocumentTreeNode]) -> [DocumentTreeNode] {
+        let folders = nodes.filter { $0.document == nil }
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            .map { node -> DocumentTreeNode in
+                var node = node
+                node.children = sortedTree(node.children ?? [])
+                return node
+            }
+        let documents = nodes.filter { $0.document != nil }
+        return folders + documents
     }
 
     // MARK: - History
