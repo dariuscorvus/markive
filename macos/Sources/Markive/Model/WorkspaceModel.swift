@@ -90,6 +90,10 @@ final class WorkspaceModel {
 
     var documentSelection: Set<FileID> = []
     var openedDocument: OpenedDocument?
+    /// Set by `openStandaloneFile` when the opened file isn't in any open
+    /// workspace's `store.documents` — the view falls back to this so it can
+    /// render the document without requiring a workspace to be open.
+    private(set) var standaloneDocument: DocumentItem?
     var presentation: DetailPresentation = .preview
     var sortOrder: DocumentSortOrder = .dateModified
     var searchText = ""
@@ -127,6 +131,12 @@ final class WorkspaceModel {
         return store.documents.first { $0.id == id }
     }
 
+    /// The document to display, whether it came from the sidebar selection or
+    /// a standalone Finder open with no covering workspace.
+    var displayedDocument: DocumentItem? {
+        selectedDocument ?? standaloneDocument
+    }
+
     /// Route all list-driven selection changes through here so back/forward history is recorded.
     func setDocumentSelection(_ newValue: Set<FileID>) {
         if let current = selectedDocumentID,
@@ -135,13 +145,14 @@ final class WorkspaceModel {
             forwardStack.removeAll()
         }
         documentSelection = newValue
+        standaloneDocument = nil
     }
 
     /// Open the selected document through the shared session. Called whenever
     /// the selection changes.
     func loadSelectedDocument() {
         guard let item = selectedDocument else {
-            openedDocument = nil
+            if standaloneDocument == nil { openedDocument = nil }
             return
         }
         do {
@@ -295,17 +306,45 @@ final class WorkspaceModel {
     }
 
     /// Opens a file handed to the app directly (Finder double-click / "Open
-    /// With"), which arrives with no workspace context. Opens the file's
-    /// containing folder as the workspace if it isn't already, then selects
-    /// the file so it renders instead of leaving "No Document Selected" up.
+    /// With"), which arrives with no workspace context. Under App Sandbox, the
+    /// open event only grants access to this one file — not its containing
+    /// folder — so this can't scan the folder as a workspace the way a
+    /// sidebar-driven open can. If a workspace covering the file happens to
+    /// already be open, select it normally; otherwise render it standalone.
     func openStandaloneFile(at url: URL) async {
-        let folder = url.deletingLastPathComponent().standardizedFileURL.resolvingSymlinksInPath()
-        if store.rootURL != folder {
-            await store.openWorkspace(at: folder)
-        }
         let canonical = url.standardizedFileURL.resolvingSymlinksInPath()
-        guard let item = store.documents.first(where: { $0.url.path == canonical.path }) else { return }
-        open(item)
+        if let item = store.documents.first(where: { $0.url.path == canonical.path }) {
+            open(item)
+            isFocusMode = true
+            return
+        }
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: canonical.path),
+              let device = attributes[.systemNumber] as? Int,
+              let inode = attributes[.systemFileNumber] as? Int else { return }
+        // Clear any prior sidebar selection so `loadSelectedDocument` (fired by
+        // DocumentDetailView's initial onChange when focus mode swaps it in)
+        // can't find a stale selected item and overwrite this one.
+        documentSelection = []
+        let id = FileID(device: device, inode: inode)
+        let item = DocumentItem(
+            id: id,
+            diskID: id,
+            url: canonical,
+            title: canonical.deletingPathExtension().lastPathComponent,
+            relativePath: canonical.lastPathComponent,
+            relativeFolder: "",
+            folderLabel: canonical.deletingLastPathComponent().lastPathComponent,
+            modifiedAt: attributes[.modificationDate] as? Date ?? .distantPast,
+            createdAt: attributes[.creationDate] as? Date ?? .distantPast
+        )
+        standaloneDocument = item
+        do {
+            let document = try store.session.document(for: item)
+            openedDocument = OpenedDocument(id: item.id, state: .document(document))
+        } catch {
+            let failure = error as? DocumentLoadFailure ?? .unreadable
+            openedDocument = OpenedDocument(id: item.id, state: .failed(failure))
+        }
         isFocusMode = true
     }
 

@@ -42,6 +42,30 @@ macos/run.sh
 
 Builds `markive-ffi` (the Rust core), then the SwiftUI app, and launches it. See [`macos/`](macos/) for the Xcode/release build path.
 
+## Releasing
+
+Tags matching `native-v*` trigger [`native-release.yml`](.github/workflows/native-release.yml), which builds a universal DMG and publishes it as a prerelease.
+
+```bash
+git fetch origin main
+git tag -a native-v0.1.8-alpha origin/main -m native-v0.1.8-alpha
+git push origin native-v0.1.8-alpha
+```
+
+- Version numbers aren't tracked in `project.yml` — each tag just bumps the patch version by convention; check the latest with `git tag -l "native-v*" | sort -V`.
+- `workflow_dispatch` (Actions tab → Native release → Run workflow) builds the same DMG as a run artifact without publishing anything — a dry run.
+- Watch it with `gh run list --workflow=native-release.yml`, or check the result with `gh release view native-v0.1.8-alpha`.
+
+### Building the DMG locally
+
+To test a release build before tagging, without pushing anything:
+
+```bash
+macos/scripts/build-dmg.sh
+```
+
+Runs the same steps as the workflow — `xcodegen generate`, an ad-hoc-signed sandboxed Release `xcodebuild`, then `hdiutil` — and produces a universal `Markive-native_local.dmg` in the repo root. Needs Xcode and `brew install xcodegen`.
+
 ## Command line
 
 Settings (⌘,) → **Install Command Line Tool** puts `markive` on your PATH. Then:
