@@ -67,6 +67,16 @@ struct DocumentDetailView: View {
             .disabled(!model.isWorkspaceOpen)
             .help("Open a document by name (⌘P)")
         }
+        if model.standaloneDocument != nil {
+            ToolbarItem {
+                Button {
+                    model.promoteStandaloneToWorkspace()
+                } label: {
+                    Label("Open Folder as Workspace", systemImage: "folder.badge.plus")
+                }
+                .help("Browse the folder this file is in")
+            }
+        }
         ToolbarItem {
             Picker("Presentation", selection: $model.presentation) {
                 ForEach(DetailPresentation.allCases) { presentation in
