@@ -3,10 +3,16 @@ import AppKit
 
 @main
 struct MarkiveApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+
     init() {
         // Periodic autosave is off (0) by default; without it, autosave-in-place
         // only fires on events like deactivation and close.
         NSDocumentController.shared.autosavingDelay = 5
+        // Route Finder "Open With" / double-click requests to the shared store
+        // instead of SwiftUI's default onOpenURL, which opens a new window per URL —
+        // Markive has one workspace-scoped window, not a window per document.
+        appDelegate.store = store
     }
 
     /// Shared across windows; each window keeps its own navigation state.
@@ -33,5 +39,16 @@ struct MarkiveApp: App {
             Task { await store.openWorkspace(at: url) }
         }
         return store
+    }
+}
+
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    var store: WorkspaceStore?
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        guard let url = urls.first else { return }
+        Task { @MainActor in
+            store?.pendingFileOpen = url
+        }
     }
 }

@@ -14,6 +14,10 @@ final class WorkspaceStore {
     private(set) var isLoading = false
     private(set) var recentWorkspaces: [URL] = []
 
+    /// Set by `AppDelegate.application(_:open:)` when Finder hands the app a
+    /// file to open; the main window observes this and clears it once handled.
+    var pendingFileOpen: URL?
+
     /// Open NSDocuments, shared across windows.
     let session = DocumentSession()
 

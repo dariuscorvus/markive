@@ -90,17 +90,18 @@ final class WorkspaceModel {
 
     var documentSelection: Set<FileID> = []
     var openedDocument: OpenedDocument?
-    var presentation: DetailPresentation = .editor
+    var presentation: DetailPresentation = .preview
     var sortOrder: DocumentSortOrder = .dateModified
     var searchText = ""
     var isInspectorPresented = false
     var isQuickOpenPresented = false
     var isWorkspaceImporterPresented = false
-    var columnVisibility: NavigationSplitViewVisibility = .all
 
+    /// Drives `NavigationSplitView`'s columnVisibility. Kept as a plain `@State`
+    /// in `MainWindowView` rather than here — a `NavigationSplitView` bound to an
+    /// `@Observable` class property doesn't reliably pick up programmatic changes.
     var isFocusMode = false {
         didSet {
-            columnVisibility = isFocusMode ? .detailOnly : .all
             if isFocusMode { isInspectorPresented = false }
         }
     }
@@ -291,6 +292,21 @@ final class WorkspaceModel {
         let canonical = URL(fileURLWithPath: path).canonicalPath
         guard let item = store.documents.first(where: { $0.url.path == canonical }) else { return }
         open(item)
+    }
+
+    /// Opens a file handed to the app directly (Finder double-click / "Open
+    /// With"), which arrives with no workspace context. Opens the file's
+    /// containing folder as the workspace if it isn't already, then selects
+    /// the file so it renders instead of leaving "No Document Selected" up.
+    func openStandaloneFile(at url: URL) async {
+        let folder = url.deletingLastPathComponent().standardizedFileURL.resolvingSymlinksInPath()
+        if store.rootURL != folder {
+            await store.openWorkspace(at: folder)
+        }
+        let canonical = url.standardizedFileURL.resolvingSymlinksInPath()
+        guard let item = store.documents.first(where: { $0.url.path == canonical.path }) else { return }
+        open(item)
+        isFocusMode = true
     }
 
     func open(_ document: DocumentItem) {
