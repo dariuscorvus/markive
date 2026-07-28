@@ -8,14 +8,22 @@ struct DocumentDetailView: View {
             .onChange(of: model.selectedDocumentID, initial: true) {
                 model.loadSelectedDocument()
             }
-            .navigationTitle(model.selectedDocument?.title ?? model.workspaceName ?? "Markive")
-            .navigationSubtitle(model.selectedDocument?.relativePath ?? "")
+            .navigationTitle(model.displayedDocument?.title ?? model.workspaceName ?? "Markive")
+            .navigationSubtitle(model.displayedDocument?.relativePath ?? "")
             .toolbar { detailToolbar }
     }
 
     @ViewBuilder
     private var content: some View {
-        if !model.isWorkspaceOpen {
+        if model.documentSelection.count > 1 {
+            ContentUnavailableView(
+                "\(model.documentSelection.count) Documents Selected",
+                systemImage: "doc.on.doc",
+                description: Text("Select a single document to read it.")
+            )
+        } else if let document = model.displayedDocument {
+            DocumentContentView(model: model, document: document)
+        } else if !model.isWorkspaceOpen {
             ContentUnavailableView {
                 Label("No Workspace Open", systemImage: "archivebox")
             } description: {
@@ -23,14 +31,6 @@ struct DocumentDetailView: View {
             } actions: {
                 Button("Open Workspace…") { model.isWorkspaceImporterPresented = true }
             }
-        } else if model.documentSelection.count > 1 {
-            ContentUnavailableView(
-                "\(model.documentSelection.count) Documents Selected",
-                systemImage: "doc.on.doc",
-                description: Text("Select a single document to read it.")
-            )
-        } else if let document = model.selectedDocument {
-            DocumentContentView(model: model, document: document)
         } else {
             ContentUnavailableView(
                 "No Document Selected",
@@ -76,7 +76,7 @@ struct DocumentDetailView: View {
                 }
             }
             .pickerStyle(.segmented)
-            .disabled(model.selectedDocument == nil)
+            .disabled(model.displayedDocument == nil)
             .help("Switch between source and preview")
         }
         ToolbarItemGroup(placement: .primaryAction) {
@@ -96,8 +96,8 @@ struct DocumentDetailView: View {
             // detach it from its binding, like the List/empty-state swap did.
             // Shares the file itself — sharing the text would copy the whole
             // buffer on every body evaluation, which 20 MB documents punish.
-            ShareLink(item: model.selectedDocument?.url ?? URL(fileURLWithPath: "/dev/null"))
-                .disabled(model.selectedDocument == nil)
+            ShareLink(item: model.displayedDocument?.url ?? URL(fileURLWithPath: "/dev/null"))
+                .disabled(model.displayedDocument == nil)
                 .help("Share the document")
             Button {
                 model.isInspectorPresented.toggle()
