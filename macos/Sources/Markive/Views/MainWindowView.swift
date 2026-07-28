@@ -3,6 +3,9 @@ import UniformTypeIdentifiers
 
 struct MainWindowView: View {
     @State private var model: WorkspaceModel
+    // Bound to NavigationSplitView directly as @State: a binding sourced from
+    // an @Observable class property doesn't reliably drive its column collapse.
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
 
     init(store: WorkspaceStore, configure: ((WorkspaceModel) -> Void)? = nil) {
         let model = WorkspaceModel(store: store)
@@ -12,12 +15,22 @@ struct MainWindowView: View {
 
     var body: some View {
         @Bindable var model = model
-        NavigationSplitView(columnVisibility: $model.columnVisibility) {
-            SidebarView(model: model)
-        } content: {
-            DocumentListView(model: model)
-        } detail: {
-            DocumentDetailView(model: model)
+        Group {
+            // NavigationSplitView's columnVisibility binding doesn't reliably
+            // collapse the sidebar+content columns together when set from code
+            // (only a real drag or the system sidebar toggle does) — so focus
+            // mode swaps to the detail view directly instead of fighting it.
+            if model.isFocusMode {
+                DocumentDetailView(model: model)
+            } else {
+                NavigationSplitView(columnVisibility: $columnVisibility) {
+                    SidebarView(model: model)
+                } content: {
+                    DocumentListView(model: model)
+                } detail: {
+                    DocumentDetailView(model: model)
+                }
+            }
         }
         .inspector(isPresented: $model.isInspectorPresented) {
             DocumentInspectorView(model: model)
@@ -35,6 +48,13 @@ struct MainWindowView: View {
         }
         .task {
             await model.store.restoreMostRecentWorkspace()
+        }
+        .onChange(of: model.store.pendingFileOpen, initial: true) {
+            guard let url = model.store.pendingFileOpen else { return }
+            Task {
+                await model.openStandaloneFile(at: url)
+                model.store.pendingFileOpen = nil
+            }
         }
         .alert(
             model.lastErrorMessage ?? "",
