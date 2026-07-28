@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import Observation
 
 enum SidebarItem: Hashable {
@@ -346,6 +347,30 @@ final class WorkspaceModel {
             openedDocument = OpenedDocument(id: item.id, state: .failed(failure))
         }
         isFocusMode = true
+    }
+
+    /// Escape hatch out of standalone viewing: prompts for the file's
+    /// containing folder (pre-navigated there, so confirming is one click)
+    /// and opens it as a full workspace. Sandbox requires this interactive
+    /// grant — it can't be requested silently the way `openStandaloneFile`
+    /// opens the file itself.
+    func promoteStandaloneToWorkspace() {
+        guard let document = standaloneDocument else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = false
+        panel.directoryURL = document.url.deletingLastPathComponent()
+        panel.prompt = "Open"
+        panel.message = "Choose the folder to open as a workspace."
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        Task {
+            await store.openWorkspace(at: url)
+            if let item = store.documents.first(where: { $0.url.path == document.url.path }) {
+                open(item)
+            }
+            isFocusMode = false
+        }
     }
 
     func open(_ document: DocumentItem) {
