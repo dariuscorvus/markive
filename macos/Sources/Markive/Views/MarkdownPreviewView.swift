@@ -61,8 +61,12 @@ struct MarkdownPreviewView: View {
                     anchor: model.pendingPreviewNavigation?.documentID == document.id
                         ? model.pendingPreviewNavigation?.anchor : nil,
                     workspaceRoot: { [store = model.store] in store.rootURL },
-                    onOpenLocalMarkdown: { path, heading in
-                        model.openDocument(atAbsolutePath: path, heading: heading)
+                    onOpenLocalMarkdown: { path, heading, adjacent in
+                        model.openDocument(
+                            atAbsolutePath: path,
+                            heading: heading,
+                            adjacent: adjacent
+                        )
                     },
                     onCreateMissingNote: { target in
                         model.createDocument(named: target)

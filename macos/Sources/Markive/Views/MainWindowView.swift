@@ -28,7 +28,7 @@ struct MainWindowView: View {
                 } content: {
                     DocumentListView(model: model)
                 } detail: {
-                    DocumentDetailView(model: model)
+                    WorkspaceDetailView(model: model)
                 }
             }
         }
@@ -57,6 +57,7 @@ struct MainWindowView: View {
         }
         .task {
             await model.store.restoreMostRecentWorkspace()
+            model.restoreArrangement()
             if model.selectedDocument == nil {
                 model.openHome()
             }
@@ -68,6 +69,12 @@ struct MainWindowView: View {
                 model.store.pendingFileOpen = nil
             }
         }
+        .onChange(of: model.selectedDocumentID) {
+            model.persistArrangement()
+        }
+        .onChange(of: model.presentation) {
+            model.persistArrangement()
+        }
         .alert(
             model.lastErrorMessage ?? "",
             isPresented: Binding(
@@ -78,6 +85,23 @@ struct MainWindowView: View {
             Button("OK", role: .cancel) { model.lastErrorMessage = nil }
         }
         .focusedSceneValue(\.workspace, model)
+    }
+}
+
+private struct WorkspaceDetailView: View {
+    @Bindable var model: WorkspaceModel
+
+    var body: some View {
+        if model.adjacentDocument != nil {
+            HSplitView {
+                DocumentDetailView(model: model)
+                    .frame(minWidth: 320)
+                AdjacentDocumentView(model: model)
+                    .frame(minWidth: 320)
+            }
+        } else {
+            DocumentDetailView(model: model)
+        }
     }
 }
 

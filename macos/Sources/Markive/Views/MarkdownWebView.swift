@@ -18,7 +18,8 @@ struct MarkdownWebView: NSViewRepresentable {
     /// Current workspace root for asset containment; nil denies all reads.
     var workspaceRoot: () -> URL?
     /// A local Markdown file was clicked (absolute path inside the workspace).
-    var onOpenLocalMarkdown: (String, String?) -> Void
+    /// The final flag is true for Option-click, which opens beside the current view.
+    var onOpenLocalMarkdown: (String, String?, Bool) -> Void
     /// An unresolved wikilink was clicked.
     var onCreateMissingNote: (String) -> Void = { _ in }
 
@@ -120,7 +121,11 @@ struct MarkdownWebView: NSViewRepresentable {
             case "http", "https":
                 NSWorkspace.shared.open(url)
             case PreviewPage.scheme where WorkspaceStore.markdownExtensions.contains(url.pathExtension.lowercased()):
-                parent.onOpenLocalMarkdown(url.path, url.fragment)
+                parent.onOpenLocalMarkdown(
+                    url.path,
+                    url.fragment,
+                    navigationAction.modifierFlags.contains(.option)
+                )
             case PreviewPage.scheme where url.fragment != nil:
                 let anchor = url.fragment?.removingPercentEncoding ?? ""
                 if let json = try? String(data: JSONEncoder().encode(anchor), encoding: .utf8) {

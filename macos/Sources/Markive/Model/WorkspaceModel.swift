@@ -135,11 +135,14 @@ final class WorkspaceModel {
 
     var documentSelection: Set<FileID> = []
     var openedDocument: OpenedDocument?
+    var adjacentDocumentID: FileID?
+    var adjacentOpenedDocument: OpenedDocument?
     /// Set by `openStandaloneFile` when the opened file isn't in any open
     /// workspace's `store.documents` — the view falls back to this so it can
     /// render the document without requiring a workspace to be open.
     private(set) var standaloneDocument: DocumentItem?
     var presentation: DetailPresentation = .preview
+    var adjacentPresentation: DetailPresentation = .preview
     var sortOrder: DocumentSortOrder = .dateModified
     var documentListStyle: DocumentListStyle = .list
     var searchText = ""
@@ -187,6 +190,11 @@ final class WorkspaceModel {
         selectedDocument ?? standaloneDocument
     }
 
+    var adjacentDocument: DocumentItem? {
+        guard let adjacentDocumentID else { return nil }
+        return store.documents.first { $0.id == adjacentDocumentID }
+    }
+
     /// Route all list-driven selection changes through here so back/forward history is recorded.
     func setDocumentSelection(_ newValue: Set<FileID>) {
         if let current = selectedDocumentID,
@@ -212,6 +220,67 @@ final class WorkspaceModel {
             let failure = error as? DocumentLoadFailure ?? .unreadable
             openedDocument = OpenedDocument(id: item.id, state: .failed(failure))
         }
+    }
+
+    func loadAdjacentDocument() {
+        guard let item = adjacentDocument else {
+            adjacentOpenedDocument = nil
+            return
+        }
+        do {
+            adjacentOpenedDocument = OpenedDocument(
+                id: item.id,
+                state: .document(try store.session.document(for: item))
+            )
+        } catch {
+            adjacentOpenedDocument = OpenedDocument(
+                id: item.id,
+                state: .failed(error as? DocumentLoadFailure ?? .unreadable)
+            )
+        }
+    }
+
+    func openAdjacent(_ document: DocumentItem) {
+        if selectedDocumentID == document.id {
+            adjacentDocumentID = nil
+            adjacentOpenedDocument = nil
+        } else {
+            adjacentDocumentID = document.id
+            loadAdjacentDocument()
+        }
+        persistArrangement()
+    }
+
+    func closeAdjacentDocument() {
+        adjacentDocumentID = nil
+        adjacentOpenedDocument = nil
+        persistArrangement()
+    }
+
+    func restoreArrangement() {
+        guard let saved = store.loadWindowArrangement() else { return }
+        if let path = saved.primaryPath,
+           let item = store.documents.first(where: { $0.relativePath == path }) {
+            open(item)
+            loadSelectedDocument()
+        }
+        if let path = saved.adjacentPath,
+           let item = store.documents.first(where: { $0.relativePath == path }),
+           item.id != selectedDocumentID {
+            adjacentDocumentID = item.id
+            loadAdjacentDocument()
+        }
+        presentation = DetailPresentation(rawValue: saved.primaryPresentation) ?? .preview
+        adjacentPresentation = DetailPresentation(rawValue: saved.adjacentPresentation) ?? .preview
+    }
+
+    func persistArrangement() {
+        store.saveWindowArrangement(.init(
+            primaryPath: selectedDocument?.relativePath,
+            adjacentPath: adjacentDocument?.relativePath,
+            primaryPresentation: presentation.rawValue,
+            adjacentPresentation: adjacentPresentation.rawValue
+        ))
     }
 
     // MARK: - Documents for the current sidebar selection
@@ -485,6 +554,7 @@ final class WorkspaceModel {
                 to: newTitle,
                 updateInboundLinks: updateInboundLinks
             )
+            persistArrangement()
             Task { await store.rescan() }
         } catch {
             lastErrorMessage = error.localizedDescription
@@ -510,6 +580,7 @@ final class WorkspaceModel {
                selected == relativePath || selected.hasPrefix(relativePath + "/") {
                 sidebarSelection = .folder(newPath + selected.dropFirst(relativePath.count))
             }
+            persistArrangement()
             Task {
                 await store.rescan()
                 await store.rebuildIndex()
@@ -522,6 +593,7 @@ final class WorkspaceModel {
     func move(_ item: DocumentItem, toFolder relativeFolder: String) {
         do {
             _ = try store.move(item, toFolder: relativeFolder)
+            persistArrangement()
             Task {
                 await store.rescan()
                 await store.rebuildIndex()
@@ -558,8 +630,13 @@ final class WorkspaceModel {
         do {
             try store.trash(item)
             documentSelection.remove(item.id)
+            if adjacentDocumentID == item.id {
+                adjacentDocumentID = nil
+                adjacentOpenedDocument = nil
+            }
             backStack.removeAll { $0 == item.id }
             forwardStack.removeAll { $0 == item.id }
+            persistArrangement()
             Task { await store.rebuildIndex() }
         } catch {
             lastErrorMessage = error.localizedDescription
@@ -577,17 +654,32 @@ final class WorkspaceModel {
 
     /// Open a workspace document by absolute path — preview links arrive this
     /// way because render_document resolves local targets to absolute paths.
-    func openDocument(atAbsolutePath path: String, heading: String? = nil) {
+    func openDocument(
+        atAbsolutePath path: String,
+        heading: String? = nil,
+        adjacent: Bool = false
+    ) {
         let canonical = URL(fileURLWithPath: path).canonicalPath
         guard let item = store.documents.first(where: { $0.url.path == canonical }) else { return }
-        open(item)
+        if adjacent {
+            openAdjacent(item)
+        } else if adjacentDocumentID == item.id {
+            // Already visible: keep one view for the path and focus it by
+            // promoting it to the primary detail.
+            adjacentDocumentID = selectedDocumentID
+            open(item)
+            loadAdjacentDocument()
+        } else {
+            open(item)
+        }
         if let heading {
-            presentation = .preview
+            if adjacent { adjacentPresentation = .preview } else { presentation = .preview }
             pendingPreviewNavigation = PreviewNavigationRequest(
                 documentID: item.id,
                 anchor: heading
             )
         }
+        persistArrangement()
     }
 
     /// Opens a file handed to the app directly (Finder double-click / "Open
@@ -658,6 +750,14 @@ final class WorkspaceModel {
     }
 
     func open(_ document: DocumentItem) {
+        if adjacentDocumentID == document.id {
+            let previous = selectedDocumentID
+            setDocumentSelection([document.id])
+            adjacentDocumentID = previous
+            loadAdjacentDocument()
+            persistArrangement()
+            return
+        }
         setDocumentSelection([document.id])
         if !visibleDocuments.contains(where: { $0.id == document.id }) {
             searchText = ""
@@ -665,6 +765,7 @@ final class WorkspaceModel {
             documentSelection = [document.id]
         }
         isQuickOpenPresented = false
+        persistArrangement()
     }
 }
 

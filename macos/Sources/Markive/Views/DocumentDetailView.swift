@@ -22,7 +22,12 @@ struct DocumentDetailView: View {
                 description: Text("Select a single document to read it.")
             )
         } else if let document = model.displayedDocument {
-            DocumentContentView(model: model, document: document)
+            DocumentContentView(
+                model: model,
+                document: document,
+                openedDocument: model.openedDocument,
+                presentation: model.presentation
+            )
         } else if !model.isWorkspaceOpen {
             ContentUnavailableView {
                 Label("No Workspace Open", systemImage: "archivebox")
@@ -132,9 +137,11 @@ struct DocumentDetailView: View {
     }
 }
 
-private struct DocumentContentView: View {
+struct DocumentContentView: View {
     @Bindable var model: WorkspaceModel
     var document: DocumentItem
+    var openedDocument: OpenedDocument?
+    var presentation: DetailPresentation
 
     var body: some View {
         Group {
@@ -145,10 +152,10 @@ private struct DocumentContentView: View {
             isPresented: conflictBinding
         ) {
             Button("Reload") {
-                model.openedDocument?.document?.resolveConflictReloading()
+                openedDocument?.document?.resolveConflictReloading()
             }
             Button("Keep My Version", role: .cancel) {
-                model.openedDocument?.document?.resolveConflictKeepingLocal()
+                openedDocument?.document?.resolveConflictKeepingLocal()
             }
         } message: {
             Text("Another application modified this file while you have unsaved edits. Reload discards your edits; Keep My Version overwrites the file.")
@@ -157,14 +164,14 @@ private struct DocumentContentView: View {
 
     private var conflictBinding: Binding<Bool> {
         Binding(
-            get: { model.openedDocument?.document?.buffer.hasConflict ?? false },
-            set: { if !$0 { model.openedDocument?.document?.buffer.hasConflict = false } }
+            get: { openedDocument?.document?.buffer.hasConflict ?? false },
+            set: { if !$0 { openedDocument?.document?.buffer.hasConflict = false } }
         )
     }
 
     @ViewBuilder
     private var content: some View {
-        switch model.openedDocument?.state {
+        switch openedDocument?.state {
         case nil:
             ProgressView()
         case .failed(.missing):
@@ -186,7 +193,7 @@ private struct DocumentContentView: View {
 
     @ViewBuilder
     private func presentationBody(openDocument: MarkdownDocument) -> some View {
-        switch model.presentation {
+        switch presentation {
         case .editor:
             MarkdownEditorView(model: model, document: document, openDocument: openDocument)
         case .preview:
@@ -197,6 +204,48 @@ private struct DocumentContentView: View {
                     .frame(minWidth: 200)
                 MarkdownPreviewView(model: model, document: document, openDocument: openDocument)
                     .frame(minWidth: 200)
+            }
+        }
+    }
+}
+
+struct AdjacentDocumentView: View {
+    @Bindable var model: WorkspaceModel
+
+    var body: some View {
+        if let document = model.adjacentDocument {
+            DocumentContentView(
+                model: model,
+                document: document,
+                openedDocument: model.adjacentOpenedDocument,
+                presentation: model.adjacentPresentation
+            )
+            .id(document.id)
+            .navigationTitle(document.title)
+            .navigationSubtitle(document.relativePath)
+            .toolbar {
+                ToolbarItem {
+                    Picker("Adjacent presentation", selection: $model.adjacentPresentation) {
+                        ForEach(DetailPresentation.allCases) { presentation in
+                            Label(presentation.title, systemImage: presentation.systemImage)
+                                .tag(presentation)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .onChange(of: model.adjacentPresentation) {
+                        model.persistArrangement()
+                    }
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        model.closeAdjacentDocument()
+                    } label: {
+                        Label("Close Adjacent View", systemImage: "xmark")
+                    }
+                }
+            }
+            .onChange(of: model.adjacentDocumentID, initial: true) {
+                model.loadAdjacentDocument()
             }
         }
     }
