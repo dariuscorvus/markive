@@ -44,11 +44,34 @@ final class WorkspaceStore {
     static let maxRecents = 5
     static let maxRecentSearches = 10
 
+    struct WindowArrangement: Codable, Equatable {
+        var primaryPath: String?
+        var adjacentPath: String?
+        var primaryPresentation: String
+        var adjacentPresentation: String
+    }
+
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         showHiddenFiles = defaults.bool(forKey: Self.showHiddenFilesKey)
         recentWorkspaces = Self.resolveRecents(from: defaults)
         recentSearches = defaults.stringArray(forKey: Self.recentSearchesKey) ?? []
+    }
+
+    func loadWindowArrangement() -> WindowArrangement? {
+        guard let rootURL,
+              let data = defaults.data(forKey: Self.arrangementKey(for: rootURL)) else { return nil }
+        return try? JSONDecoder().decode(WindowArrangement.self, from: data)
+    }
+
+    func saveWindowArrangement(_ arrangement: WindowArrangement) {
+        guard let rootURL,
+              let data = try? JSONEncoder().encode(arrangement) else { return }
+        defaults.set(data, forKey: Self.arrangementKey(for: rootURL))
+    }
+
+    private static func arrangementKey(for root: URL) -> String {
+        "windowArrangement.\(root.canonicalPath)"
     }
 
     // MARK: - Opening

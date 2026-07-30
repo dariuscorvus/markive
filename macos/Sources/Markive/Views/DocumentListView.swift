@@ -179,6 +179,10 @@ struct DocumentListView: View {
                         .disabled(path == document.relativeFolder)
                     }
                 }
+                Button("Open Beside Current") {
+                    model.openAdjacent(document)
+                }
+                .disabled(model.selectedDocumentID == document.id)
                 Divider()
                 Button("Copy Path") {
                     NSPasteboard.general.clearContents()

@@ -614,6 +614,57 @@ private func isolatedDefaults() -> UserDefaults {
         #expect(outside.contains("[target](Archive/Target.md)"))
         #expect(outside.contains("[[Archive/Target]]"))
     }
+
+    @MainActor
+    @Test func restoresTwoDocumentArrangementAndIndependentPresentation() async throws {
+        let defaults = isolatedDefaults()
+        let fixture = try FixtureWorkspace(files: [
+            ("One.md", "# One"),
+            ("Two.md", "# Two"),
+        ])
+        defer { fixture.tearDown() }
+        let store = WorkspaceStore(defaults: defaults)
+        await store.openWorkspace(at: fixture.root)
+        let one = try #require(store.documents.first { $0.relativePath == "One.md" })
+        let two = try #require(store.documents.first { $0.relativePath == "Two.md" })
+        let first = WorkspaceModel(store: store)
+        first.open(one)
+        first.presentation = .editor
+        first.openAdjacent(two)
+        first.adjacentPresentation = .preview
+        first.persistArrangement()
+
+        let restored = WorkspaceModel(store: store)
+        restored.restoreArrangement()
+
+        #expect(restored.selectedDocument?.relativePath == "One.md")
+        #expect(restored.adjacentDocument?.relativePath == "Two.md")
+        #expect(restored.presentation == .editor)
+        #expect(restored.adjacentPresentation == .preview)
+        #expect(restored.openedDocument?.document != nil)
+        #expect(restored.adjacentOpenedDocument?.document != nil)
+    }
+
+    @MainActor
+    @Test func openingVisibleAdjacentDocumentFocusesWithoutDuplicatingIt() async throws {
+        let fixture = try FixtureWorkspace(files: [
+            ("One.md", "# One"),
+            ("Two.md", "# Two"),
+        ])
+        defer { fixture.tearDown() }
+        let store = WorkspaceStore(defaults: isolatedDefaults())
+        await store.openWorkspace(at: fixture.root)
+        let one = try #require(store.documents.first { $0.relativePath == "One.md" })
+        let two = try #require(store.documents.first { $0.relativePath == "Two.md" })
+        let model = WorkspaceModel(store: store)
+        model.open(one)
+        model.openAdjacent(two)
+
+        model.open(two)
+
+        #expect(model.selectedDocumentID == two.id)
+        #expect(model.adjacentDocumentID == one.id)
+    }
 }
 
 @Suite struct FavoritesTests {
