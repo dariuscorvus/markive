@@ -17,6 +17,7 @@ final class WorkspaceStore {
     private(set) var knowledgeIndexRevision = 0
     private(set) var recentWorkspaces: [URL] = []
     private(set) var recentSearches: [String] = []
+    private(set) var showHiddenFiles: Bool
     var settings = WorkspaceSettings()
 
     /// Set by `AppDelegate.application(_:open:)` when Finder hands the app a
@@ -39,11 +40,13 @@ final class WorkspaceStore {
 
     static let recentBookmarksKey = "recentWorkspaceBookmarks"
     static let recentSearchesKey = "recentKnowledgeSearches"
+    static let showHiddenFilesKey = "showHiddenFiles"
     static let maxRecents = 5
     static let maxRecentSearches = 10
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        showHiddenFiles = defaults.bool(forKey: Self.showHiddenFilesKey)
         recentWorkspaces = Self.resolveRecents(from: defaults)
         recentSearches = defaults.stringArray(forKey: Self.recentSearchesKey) ?? []
     }
@@ -67,8 +70,19 @@ final class WorkspaceStore {
         recordRecent(url)
 
         let name = root.lastPathComponent
+        let policy = WorkspaceScanPolicy(showHiddenFiles: showHiddenFiles)
+
+        // Publish the root level first. A large vault can be navigated while
+        // the complete recursive scan and knowledge rebuild continue.
+        let initial = await Task.detached(priority: .userInitiated) {
+            Self.scanRootLevel(root: root, rootName: name, policy: policy)
+        }.value
+        guard generation == scanGeneration else { return }
+        folderTree = initial.folders
+        documents = initial.documents
+
         let snapshot = await Task.detached(priority: .userInitiated) {
-            Self.scan(root: root, rootName: name)
+            Self.scan(root: root, rootName: name, policy: policy)
         }.value
 
         // A stale scan must never clobber a workspace opened while it ran.
@@ -89,8 +103,9 @@ final class WorkspaceStore {
         guard let rootURL, let rootName else { return }
         scanGeneration += 1
         let generation = scanGeneration
+        let policy = WorkspaceScanPolicy(showHiddenFiles: showHiddenFiles)
         let snapshot = await Task.detached(priority: .utility) {
-            Self.scan(root: rootURL, rootName: rootName)
+            Self.scan(root: rootURL, rootName: rootName, policy: policy)
         }.value
         if generation == scanGeneration {
             folderTree = snapshot.folders
@@ -109,6 +124,13 @@ final class WorkspaceStore {
         // manual one) must not skip it — the winner may already have run before
         // the change this rescan was reacting to.
         session.checkExternalChanges()
+    }
+
+    func setShowHiddenFiles(_ show: Bool) async {
+        guard showHiddenFiles != show else { return }
+        showHiddenFiles = show
+        defaults.set(show, forKey: Self.showHiddenFilesKey)
+        await rescan()
     }
 
     /// Rebuilds only changed index entries. Unchanged documents reuse their
@@ -516,15 +538,50 @@ final class WorkspaceStore {
 
     nonisolated static let markdownExtensions: Set<String> = ["md", "markdown"]
 
-    /// Walks the root collecting Markdown files and the folder tree. Hidden files
-    /// and package contents are skipped. `DirectoryEnumerator` does not descend
-    /// into symlinked directories, so symlink loops cannot occur.
-    nonisolated static func scan(root: URL, rootName: String) -> Snapshot {
+    /// Reads only the root directory so the explorer has useful navigation
+    /// before a recursive scan of a large vault completes.
+    nonisolated static func scanRootLevel(
+        root: URL,
+        rootName: String,
+        policy: WorkspaceScanPolicy = WorkspaceScanPolicy()
+    ) -> Snapshot {
+        let keys: [URLResourceKey] = [.isDirectoryKey]
+        guard let urls = try? FileManager.default.contentsOfDirectory(
+            at: root,
+            includingPropertiesForKeys: keys,
+            options: [.skipsPackageDescendants]
+        ) else { return Snapshot() }
+
+        var folders: [String] = []
+        var documents: [DocumentItem] = []
+        for url in urls {
+            let isDirectory = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
+            guard !policy.ignores(url, isDirectory: isDirectory) else { continue }
+            if isDirectory {
+                folders.append(url.lastPathComponent)
+            } else if let item = scannableItem(at: url, root: root, rootName: rootName) {
+                documents.append(item)
+            }
+        }
+        return Snapshot(
+            folders: buildTree(from: folders.sorted()),
+            documents: documents
+        )
+    }
+
+    /// Walks the root collecting Markdown files and the folder tree. Ignore
+    /// rules are centralized in `WorkspaceScanPolicy`. Package contents and
+    /// symlinked directories are not traversed, so loops cannot occur.
+    nonisolated static func scan(
+        root: URL,
+        rootName: String,
+        policy: WorkspaceScanPolicy = WorkspaceScanPolicy()
+    ) -> Snapshot {
         let fileManager = FileManager.default
         guard let enumerator = fileManager.enumerator(
             at: root,
             includingPropertiesForKeys: [.isDirectoryKey],
-            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+            options: [.skipsPackageDescendants]
         ) else { return Snapshot() }
 
         let rootPath = root.path
@@ -538,17 +595,16 @@ final class WorkspaceStore {
             let relativePath = String(path.dropFirst(rootPath.count + 1))
 
             let isDirectory = (try? resolved.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
+            if policy.ignores(resolved, isDirectory: isDirectory) {
+                if isDirectory { enumerator.skipDescendants() }
+                continue
+            }
             if isDirectory {
                 folderPaths.append(relativePath)
                 continue
             }
 
-            guard markdownExtensions.contains(resolved.pathExtension.lowercased()) else { continue }
-            // Skip "name~.md" backups: NSDocument's safe-save briefly renames
-            // the original file to one, and if scanned it inherits the old
-            // inode and steals the document's identity.
-            guard !resolved.deletingPathExtension().lastPathComponent.hasSuffix("~") else { continue }
-            if let item = item(at: resolved, root: root, rootName: rootName) {
+            if let item = scannableItem(at: resolved, root: root, rootName: rootName) {
                 documents.append(item)
             }
         }
@@ -557,6 +613,18 @@ final class WorkspaceStore {
             folders: buildTree(from: folderPaths.sorted()),
             documents: documents
         )
+    }
+
+    nonisolated private static func scannableItem(
+        at url: URL,
+        root: URL,
+        rootName: String
+    ) -> DocumentItem? {
+        guard markdownExtensions.contains(url.pathExtension.lowercased()) else { return nil }
+        // Skip "name~.md" backups: NSDocument's safe-save briefly renames the
+        // original file to one, and scanning it steals the document identity.
+        guard !url.deletingPathExtension().lastPathComponent.hasSuffix("~") else { return nil }
+        return item(at: url, root: root, rootName: rootName)
     }
 
     /// Builds a nested tree from sorted relative folder paths.

@@ -33,6 +33,27 @@ struct FolderNode: Identifiable, Hashable, Sendable {
     var children: [FolderNode]?
 }
 
+/// One scan policy feeds the explorer, Quick Open, search, and knowledge index
+/// because all four consume `WorkspaceStore.documents`.
+struct WorkspaceScanPolicy: Equatable, Sendable {
+    var showHiddenFiles = false
+
+    /// Repository internals are never notes. Other dot-folders remain available
+    /// through "Show Hidden Files" — including `.obsidian` during migration.
+    static let ignoredDirectoryNames: Set<String> = [".git"]
+
+    func ignores(_ url: URL, isDirectory: Bool) -> Bool {
+        let name = url.lastPathComponent
+        if isDirectory && Self.ignoredDirectoryNames.contains(name) {
+            return true
+        }
+        if !showHiddenFiles && name.hasPrefix(".") {
+            return true
+        }
+        return false
+    }
+}
+
 extension URL {
     /// Path with symlinks resolved — "/var/…" and "/private/var/…" compare equal.
     var canonicalPath: String {

@@ -35,6 +35,16 @@ struct DocumentListView: View {
                             }
                         }
                         .pickerStyle(.inline)
+                        Divider()
+                        Toggle(
+                            "Show Hidden Files",
+                            isOn: Binding(
+                                get: { model.store.showHiddenFiles },
+                                set: { show in
+                                    Task { await model.store.setShowHiddenFiles(show) }
+                                }
+                            )
+                        )
                     } label: {
                         Label("Sort", systemImage: "arrow.up.arrow.down")
                     }
@@ -141,7 +151,11 @@ struct DocumentListView: View {
 
     @ViewBuilder
     private func documentRow(_ document: DocumentItem) -> some View {
-        DocumentRow(document: document, isFavorite: model.store.isFavorite(document))
+        DocumentRow(
+            document: document,
+            isFavorite: model.store.isFavorite(document),
+            openDocument: model.store.session.openDocument(id: document.id)
+        )
             .tag(document.id)
             .draggable(document.url)
             .contextMenu {
@@ -179,8 +193,15 @@ struct DocumentListView: View {
 struct DocumentRow: View {
     var document: DocumentItem
     var isFavorite: Bool
+    var openDocument: MarkdownDocument?
 
     var body: some View {
+        let isModified = if let openDocument {
+            // Track buffer edits so the NSDocument change state is re-read.
+            openDocument.buffer.changeRevision >= 0 && openDocument.hasUnautosavedChanges
+        } else {
+            false
+        }
         HStack(alignment: .firstTextBaseline) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(document.title)
@@ -189,6 +210,17 @@ struct DocumentRow: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
+            if openDocument?.buffer.hasConflict == true {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                    .imageScale(.small)
+                    .accessibilityLabel("Conflicting external change")
+            } else if isModified {
+                Image(systemName: "circle.fill")
+                    .foregroundStyle(.secondary)
+                    .imageScale(.small)
+                    .accessibilityLabel("Modified")
+            }
             if isFavorite {
                 Image(systemName: "star.fill")
                     .foregroundStyle(.yellow)
