@@ -1,16 +1,14 @@
-# Native (SwiftUI) app release: an ad-hoc-signed DMG on every native-v* tag.
+# Stable native app release: an ad-hoc-signed DMG on every v* tag.
 # The app is unsigned for distribution — after download it needs
-# `xattr -dr com.apple.quarantine`, same as any unsigned bundle. Developer ID
-# signing and notarization can be added by mirroring release.yml when the
-# native app leaves alpha.
+# `xattr -dr com.apple.quarantine`, same as any unsigned bundle.
 #
 # workflow_dispatch builds and uploads the DMG as a run artifact without
 # creating a release — the dry-run path.
-name: Native release
+name: Release
 
 on:
   push:
-    tags: ["native-v*"]
+    tags: ["v*"]
   workflow_dispatch:
 
 jobs:
@@ -53,7 +51,7 @@ jobs:
           lipo -archs "$app/Contents/MacOS/Markive" | tee /dev/stderr | grep -q "x86_64 arm64"
           codesign -d --entitlements - "$app" | grep -q "com.apple.security.app-sandbox"
 
-          version="${GITHUB_REF_NAME#native-v}"
+          version="${GITHUB_REF_NAME#v}"
           [ "${GITHUB_REF_NAME}" = "${version}" ] && version=dev
           staging=$(mktemp -d)
           cp -R "$app" "$staging/"
@@ -63,23 +61,37 @@ jobs:
           cp macos/Resources/AppIcon.icns "$staging/.VolumeIcon.icns"
           SetFile -a C "$staging"
           hdiutil create -volname "Markive" -srcfolder "$staging" -ov -format UDZO \
-            "Markive-native_${version}.dmg"
-          echo "DMG=Markive-native_${version}.dmg" >> "$GITHUB_ENV"
+            "Markive_${version}.dmg"
+          echo "DMG=Markive_${version}.dmg" >> "$GITHUB_ENV"
 
       - name: Upload artifact (dry runs)
         if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
-          name: Markive-native
-          path: Markive-native_*.dmg
+          name: Markive
+          path: Markive_*.dmg
 
-      - name: Create prerelease
-        if: startsWith(github.ref, 'refs/tags/native-v')
+      - name: Create release
+        if: startsWith(github.ref, 'refs/tags/v')
         run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v heading="## [${version}]" '
+            $0 == heading || index($0, heading " - ") == 1 { found = 1; next }
+            found && /^## \[/ { exit }
+            found { print }
+            END { if (!found) exit 1 }
+          ' CHANGELOG.md > /tmp/changelog-section.md
+
+          {
+            cat .github/release-notes/install-unsigned.md
+            printf '\n'
+            cat /tmp/changelog-section.md
+          } > /tmp/release-notes.md
+
           gh release create "${GITHUB_REF_NAME}" \
-            --prerelease \
-            --title "Markive native ${GITHUB_REF_NAME#native-}" \
-            --notes "$(cat .github/release-notes/install-unsigned.md)" \
+            --latest \
+            --title "Markive ${GITHUB_REF_NAME}" \
+            --notes-file /tmp/release-notes.md \
             "$DMG"
         env:
           GH_TOKEN: ${{ github.token }}
