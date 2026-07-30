@@ -22,6 +22,7 @@ final class MarkdownDocument: NSDocument {
         /// observing `text` invalidate on edits without the document copying
         /// the string per keystroke.
         fileprivate(set) var revision = 0
+        var changeRevision: Int { revision }
         /// The file changed on disk while local edits are unsaved; the UI
         /// offers Reload / Keep My Version.
         var hasConflict = false

@@ -94,6 +94,62 @@ private func isolatedDefaults() -> UserDefaults {
         #expect(snapshot.folders.isEmpty)
     }
 
+    @Test func hiddenFilesCanBeIncludedWithoutTraversingRepositoryInternals() throws {
+        let fixture = try FixtureWorkspace(files: [
+            ("visible.md", "v"),
+            (".private.md", "private"),
+            (".notes/inside.md", "inside"),
+            (".git/objects/readme.md", "not a document"),
+        ])
+        defer { fixture.tearDown() }
+
+        let root = fixture.root.standardizedFileURL.resolvingSymlinksInPath()
+        let snapshot = WorkspaceStore.scan(
+            root: root,
+            rootName: "Fixture",
+            policy: WorkspaceScanPolicy(showHiddenFiles: true)
+        )
+
+        #expect(Set(snapshot.documents.map(\.relativePath)) == [
+            "visible.md", ".private.md", ".notes/inside.md",
+        ])
+        #expect(snapshot.folders.map(\.id) == [".notes"])
+    }
+
+    @Test func rootLevelScanExposesNavigationWithoutWalkingTheTree() throws {
+        let fixture = try FixtureWorkspace(files: [
+            ("root.md", "root"),
+            ("Large/Deep/Nested.md", "nested"),
+        ])
+        defer { fixture.tearDown() }
+        try FileManager.default.createDirectory(
+            at: fixture.root.appendingPathComponent("Empty", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+
+        let root = fixture.root.standardizedFileURL.resolvingSymlinksInPath()
+        let initial = WorkspaceStore.scanRootLevel(root: root, rootName: "Fixture")
+
+        #expect(initial.documents.map(\.relativePath) == ["root.md"])
+        #expect(initial.folders.map(\.id) == ["Empty", "Large"])
+        #expect(initial.folders.allSatisfy { $0.children == nil })
+    }
+
+    @Test func emptyFoldersRemainInTheRecursiveTree() throws {
+        let fixture = try FixtureWorkspace(files: [("HasNote/note.md", "note")])
+        defer { fixture.tearDown() }
+        try FileManager.default.createDirectory(
+            at: fixture.root.appendingPathComponent("Empty/Nested", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+
+        let root = fixture.root.standardizedFileURL.resolvingSymlinksInPath()
+        let snapshot = WorkspaceStore.scan(root: root, rootName: "Fixture")
+
+        let empty = try #require(snapshot.folders.first { $0.id == "Empty" })
+        #expect(empty.children?.map(\.id) == ["Empty/Nested"])
+    }
+
     @Test func fileIdentitySurvivesRename() throws {
         let fixture = try FixtureWorkspace(files: [("Before.md", "content")])
         defer { fixture.tearDown() }
