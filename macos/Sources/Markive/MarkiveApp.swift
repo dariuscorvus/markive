@@ -26,6 +26,9 @@ struct MarkiveApp: App {
         .commands {
             AppCommands()
         }
+        Settings {
+            WorkspaceSettingsView(store: store)
+        }
     }
 
     /// `--workspace <path>` opens a workspace at launch instead of restoring the

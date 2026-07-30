@@ -6,6 +6,7 @@ struct DocumentListView: View {
     @State private var documentPendingTrash: DocumentItem?
     @State private var renameTarget: DocumentItem?
     @State private var renameTitle = ""
+    @State private var updateInboundLinks = true
 
     var body: some View {
         // The List must stay in the hierarchy permanently: swapping it out for an
@@ -60,8 +61,15 @@ struct DocumentListView: View {
                 )
             ) {
                 TextField("Title", text: $renameTitle)
+                Toggle("Update links to this note", isOn: $updateInboundLinks)
                 Button("Rename") {
-                    if let target = renameTarget { model.rename(target, to: renameTitle) }
+                    if let target = renameTarget {
+                        model.rename(
+                            target,
+                            to: renameTitle,
+                            updateInboundLinks: updateInboundLinks
+                        )
+                    }
                     renameTarget = nil
                 }
                 Button("Cancel", role: .cancel) { renameTarget = nil }
@@ -142,6 +150,7 @@ struct DocumentListView: View {
                 }
                 Button("Rename…") {
                     renameTitle = document.title
+                    updateInboundLinks = model.store.settings.alwaysUpdateLinks
                     renameTarget = document
                 }
                 Divider()

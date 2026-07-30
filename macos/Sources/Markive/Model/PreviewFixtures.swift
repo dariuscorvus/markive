@@ -23,6 +23,22 @@ enum PreviewFixtures {
             ("Notes/Projects/Editor Spike.md", "# Editor Spike\n\nTextKit 2 against the 20 MB fixture.\n"),
             ("Journal/2026-07-27.md", "# 2026-07-27\n\nStarted the filesystem layer.\n"),
             ("Reading/Reading List.md", "# Reading List\n\n- The Mythical Man-Month\n"),
+            ("Knowledge.md", """
+            ---
+            aliases: [Second Brain]
+            tags: [knowledge, active]
+            status: growing
+            ---
+            # Knowledge
+
+            See [[Roadmap]].
+
+            > [!note] Connected notes
+            > Backlinks and metadata stay derived from plain files.
+
+            > [!warning]- Migration boundary
+            > Never rewrite `.obsidian` settings.
+            """),
         ]
         for (path, content) in files {
             let url = root.appendingPathComponent(path)

@@ -12,7 +12,9 @@ use ammonia::Builder;
 use percent_encoding::percent_decode_str;
 use pulldown_cmark::{CodeBlockKind, CowStr, Event, Options, Parser, Tag, TagEnd};
 
+mod analysis;
 mod code_highlight;
+pub use analysis::{DocumentAnalysis, analyze_document, analyze_document_json};
 use code_highlight::CodeToken;
 
 /// File extensions Markive treats as Markdown documents.
@@ -170,6 +172,7 @@ fn sanitize(html: &str) -> String {
         .add_tag_attributes("meter", ["value", "min", "max", "low", "high"])
         .add_tag_attributes("progress", ["value", "max"])
         .add_tag_attributes("time", ["datetime"]);
+    builder.add_url_schemes(&["markive-create"]);
     // GitHub keeps the legacy `align` attribute; READMEs rely on it to
     // center images and badges.
     for tag in ["p", "div", "td", "th"] {

@@ -38,16 +38,28 @@ struct MainWindowView: View {
         .sheet(isPresented: $model.isQuickOpenPresented) {
             QuickOpenView(model: model)
         }
+        .sheet(isPresented: $model.isKnowledgeSearchPresented) {
+            KnowledgeSearchView(model: model)
+        }
+        .sheet(isPresented: $model.isTemplatePickerPresented) {
+            TemplatePickerView(model: model)
+        }
         .fileImporter(
             isPresented: $model.isWorkspaceImporterPresented,
             allowedContentTypes: [.folder]
         ) { result in
             if case .success(let url) = result {
-                Task { await model.store.openWorkspace(at: url) }
+                Task {
+                    await model.store.openWorkspace(at: url)
+                    model.openHome()
+                }
             }
         }
         .task {
             await model.store.restoreMostRecentWorkspace()
+            if model.selectedDocument == nil {
+                model.openHome()
+            }
         }
         .onChange(of: model.store.pendingFileOpen, initial: true) {
             guard let url = model.store.pendingFileOpen else { return }

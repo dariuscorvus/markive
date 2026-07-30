@@ -32,11 +32,15 @@ struct DocumentDetailView: View {
                 Button("Open Workspace…") { model.isWorkspaceImporterPresented = true }
             }
         } else {
-            ContentUnavailableView(
-                "No Document Selected",
-                systemImage: "doc.text",
-                description: Text("Select a document from the list.")
-            )
+            ContentUnavailableView {
+                Label("No Document Selected", systemImage: "doc.text")
+            } description: {
+                Text("Open an existing note or capture a new one.")
+            } actions: {
+                Button("Today") { model.openToday() }
+                Button("New Note") { model.newDocument() }
+                Button("Quick Open") { model.isQuickOpenPresented = true }
+            }
         }
     }
 
@@ -66,6 +70,15 @@ struct DocumentDetailView: View {
             }
             .disabled(!model.isWorkspaceOpen)
             .help("Open a document by name (⌘P)")
+        }
+        ToolbarItem {
+            Button {
+                model.isKnowledgeSearchPresented = true
+            } label: {
+                Label("Search Workspace", systemImage: "text.magnifyingglass")
+            }
+            .disabled(!model.isWorkspaceOpen)
+            .help("Search note content (⇧⌘F)")
         }
         if model.standaloneDocument != nil {
             ToolbarItem {
@@ -175,12 +188,12 @@ private struct DocumentContentView: View {
     private func presentationBody(openDocument: MarkdownDocument) -> some View {
         switch model.presentation {
         case .editor:
-            MarkdownEditorView(document: openDocument)
+            MarkdownEditorView(model: model, document: document, openDocument: openDocument)
         case .preview:
             MarkdownPreviewView(model: model, document: document, openDocument: openDocument)
         case .editorAndPreview:
             HSplitView {
-                MarkdownEditorView(document: openDocument)
+                MarkdownEditorView(model: model, document: document, openDocument: openDocument)
                     .frame(minWidth: 200)
                 MarkdownPreviewView(model: model, document: document, openDocument: openDocument)
                     .frame(minWidth: 200)

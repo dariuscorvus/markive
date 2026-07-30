@@ -16,6 +16,16 @@ struct EditorHighlight: Equatable, Sendable {
 
 /// Swift face of the markive-core Rust pipeline (crates/markive-ffi).
 enum MarkiveCore {
+    nonisolated static func analyzeDocument(markdown: String) -> DocumentAnalysis? {
+        let json: UnsafeMutablePointer<CChar>? = markdown.withCString {
+            mk_analyze_document($0)
+        }
+        guard let json else { return nil }
+        defer { mk_string_free(json) }
+        let data = Data(bytes: json, count: strlen(json))
+        return try? JSONDecoder().decode(DocumentAnalysis.self, from: data)
+    }
+
     /// Markdown → sanitized HTML. Pure and thread-safe; call it off the main
     /// thread for large documents — the 20 MB fixture budget is enforced in
     /// MarkiveCoreTests.

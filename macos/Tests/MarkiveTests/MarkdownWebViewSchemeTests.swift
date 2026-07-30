@@ -17,7 +17,7 @@ import WebKit
             title: title,
             body: body,
             workspaceRoot: { nil },
-            onOpenLocalMarkdown: { _ in }
+            onOpenLocalMarkdown: { _, _ in }
         )
     }
 

@@ -60,6 +60,21 @@ import Testing
         #expect(script.contains("window.__markiveRenderMermaid()"))
     }
 
+    @Test func pageAndContentSwapsRenderSanitizedCallouts() throws {
+        let page = PreviewPage.page(
+            body: "<blockquote><p>[!warning]- Read first</p><p>Body</p></blockquote>",
+            title: "Callout"
+        )
+        let swap = try #require(PreviewPage.contentSwapScript(
+            body: "<blockquote><p>[!note] Title</p></blockquote>"
+        ))
+
+        #expect(page.contains("__markiveRenderCallouts"))
+        #expect(page.contains("callout-warning"))
+        #expect(page.contains("document.createElement('details')"))
+        #expect(swap.contains("__markiveRenderCallouts"))
+    }
+
     @Test func vendoredMermaidBundleIsPresentAndDefinesGlobal() throws {
         // Loaded from the checked-in resource directly (not Bundle.main —
         // that only resolves inside a real .app bundle, which `swift test`

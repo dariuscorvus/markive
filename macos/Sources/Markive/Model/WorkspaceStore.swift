@@ -12,7 +12,12 @@ final class WorkspaceStore {
     private(set) var folderTree: [FolderNode] = []
     private(set) var documents: [DocumentItem] = []
     private(set) var isLoading = false
+    private(set) var isIndexing = false
+    private(set) var knowledgeIndex = KnowledgeIndex.empty
+    private(set) var knowledgeIndexRevision = 0
     private(set) var recentWorkspaces: [URL] = []
+    private(set) var recentSearches: [String] = []
+    var settings = WorkspaceSettings()
 
     /// Set by `AppDelegate.application(_:open:)` when Finder hands the app a
     /// file to open; the main window observes this and clears it once handled.
@@ -33,11 +38,14 @@ final class WorkspaceStore {
     private var watcher: WorkspaceWatcher?
 
     static let recentBookmarksKey = "recentWorkspaceBookmarks"
+    static let recentSearchesKey = "recentKnowledgeSearches"
     static let maxRecents = 5
+    static let maxRecentSearches = 10
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         recentWorkspaces = Self.resolveRecents(from: defaults)
+        recentSearches = defaults.stringArray(forKey: Self.recentSearchesKey) ?? []
     }
 
     // MARK: - Opening
@@ -50,6 +58,7 @@ final class WorkspaceStore {
         let root = url.standardizedFileURL.resolvingSymlinksInPath()
         rootURL = root
         rootName = root.lastPathComponent
+        settings = WorkspaceSettings.load(root: root, defaults: defaults)
         favoritePaths = Set((defaults.array(forKey: Self.favoritesKey(for: root)) as? [String]) ?? [])
         isLoading = true
         scanGeneration += 1
@@ -67,6 +76,7 @@ final class WorkspaceStore {
         folderTree = snapshot.folders
         documents = snapshot.documents
         isLoading = false
+        await rebuildIndex(generation: generation)
 
         watcher = WorkspaceWatcher(root: root) { [weak self] in
             Task { @MainActor in await self?.rescan() }
@@ -92,12 +102,52 @@ final class WorkspaceStore {
                     session.updateURL(id: item.id, to: item.url)
                 }
             }
+            await rebuildIndex(generation: generation)
         }
         // Outside the generation guard: reconciling open buffers is idempotent,
         // and a rescan discarded as stale (a watcher-triggered rescan racing a
         // manual one) must not skip it — the winner may already have run before
         // the change this rescan was reacting to.
         session.checkExternalChanges()
+    }
+
+    /// Rebuilds only changed index entries. Unchanged documents reuse their
+    /// content and analysis, while deleted paths disappear with the new map.
+    func rebuildIndex() async {
+        await rebuildIndex(generation: scanGeneration)
+    }
+
+    private func rebuildIndex(generation: Int) async {
+        let documents = documents
+        let previous = knowledgeIndex
+        isIndexing = true
+        let rebuilt = await Task.detached(priority: .utility) {
+            KnowledgeIndex.build(documents: documents, reusing: previous)
+        }.value
+        guard generation == scanGeneration else { return }
+        knowledgeIndex = rebuilt
+        knowledgeIndexRevision += 1
+        isIndexing = false
+    }
+
+    func updateIndex(for item: DocumentItem, content: String) async {
+        let analysis = await Task.detached(priority: .utility) {
+            MarkiveCore.analyzeDocument(markdown: content)
+        }.value
+        guard let analysis,
+              documents.contains(where: { $0.id == item.id }) else { return }
+        var updated = knowledgeIndex
+        updated.documentsByPath[item.relativePath] = IndexedDocument(
+            id: item.id,
+            diskID: item.diskID,
+            relativePath: item.relativePath,
+            title: item.title,
+            modifiedAt: item.modifiedAt,
+            content: content,
+            analysis: analysis
+        )
+        knowledgeIndex = updated
+        knowledgeIndexRevision += 1
     }
 
     /// Carries stable identities across a rescan. An unchanged or renamed file
@@ -160,12 +210,19 @@ final class WorkspaceStore {
         case noWorkspace
         case invalidTitle
         case nameTaken(String)
+        case outsideWorkspace
+        case templateUnreadable(String)
+        case linkedDocumentUnsaved(String)
 
         var errorDescription: String? {
             switch self {
             case .noWorkspace: "No workspace is open."
             case .invalidTitle: "Document names can't be empty or contain “/”."
             case .nameTaken(let name): "A file named “\(name)” already exists."
+            case .outsideWorkspace: "The document path must stay inside the open workspace."
+            case .templateUnreadable(let path): "The template “\(path)” could not be read."
+            case .linkedDocumentUnsaved(let path):
+                "Save “\(path)” before renaming this linked note."
             }
         }
     }
@@ -191,9 +248,103 @@ final class WorkspaceStore {
         return item
     }
 
+    /// Creates a specifically named document, including intermediate folders.
+    /// Existing files are returned unchanged and never overwritten.
+    func createDocument(relativePath: String, content: String = "") throws -> (DocumentItem, created: Bool) {
+        guard let rootURL else { throw WriteError.noWorkspace }
+        var path = relativePath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty, !path.hasPrefix("/") else { throw WriteError.invalidTitle }
+        if !WorkspaceStore.markdownExtensions.contains(
+            URL(fileURLWithPath: path).pathExtension.lowercased()
+        ) {
+            path += ".md"
+        }
+        var components: [Substring] = []
+        for component in path.split(separator: "/", omittingEmptySubsequences: true) {
+            if component == "." { continue }
+            guard component != ".." else { throw WriteError.outsideWorkspace }
+            components.append(component)
+        }
+        let normalized = components.joined(separator: "/")
+        guard !normalized.isEmpty else { throw WriteError.invalidTitle }
+        let url = rootURL.appendingPathComponent(normalized)
+        guard url.canonicalPath.hasPrefix(rootURL.canonicalPath + "/") else {
+            throw WriteError.outsideWorkspace
+        }
+
+        if FileManager.default.fileExists(atPath: url.path) {
+            guard let item = Self.item(at: url, root: rootURL, rootName: rootName ?? "") else {
+                throw CocoaError(.fileReadUnknown)
+            }
+            return (item, false)
+        }
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try content.write(to: url, atomically: true, encoding: .utf8)
+        guard let item = Self.item(at: url, root: rootURL, rootName: rootName ?? "") else {
+            throw CocoaError(.fileReadUnknown)
+        }
+        documents.insert(item, at: 0)
+        return (item, true)
+    }
+
+    func createDailyDocument(on date: Date = Date()) throws -> (DocumentItem, created: Bool) {
+        guard let rootURL else { throw WriteError.noWorkspace }
+        let relativePath = settings.dailyRelativePath(on: date)
+        let title = URL(fileURLWithPath: relativePath).deletingPathExtension().lastPathComponent
+        var content = ""
+        if !settings.dailyTemplate.isEmpty {
+            let configured = rootURL.appendingPathComponent(settings.dailyTemplate)
+            let templateURL = FileManager.default.fileExists(atPath: configured.path)
+                ? configured
+                : configured.appendingPathExtension("md")
+            guard let template = try? String(contentsOf: templateURL, encoding: .utf8) else {
+                throw WriteError.templateUnreadable(settings.dailyTemplate)
+            }
+            content = WorkspaceSettings.expandTemplate(template, title: title, date: date)
+        }
+        return try createDocument(relativePath: relativePath, content: content)
+    }
+
+    func templateDocuments() -> [DocumentItem] {
+        guard !settings.templatesFolder.isEmpty else { return [] }
+        return documents.filter {
+            $0.relativeFolder == settings.templatesFolder
+                || $0.relativeFolder.hasPrefix(settings.templatesFolder + "/")
+        }
+    }
+
+    func contentFromTemplate(_ template: DocumentItem, title: String, date: Date = Date()) throws -> String {
+        guard let content = try? String(contentsOf: template.url, encoding: .utf8) else {
+            throw WriteError.templateUnreadable(template.relativePath)
+        }
+        return WorkspaceSettings.expandTemplate(content, title: title, date: date)
+    }
+
+    func saveSettings() {
+        guard let rootURL else { return }
+        settings.save(root: rootURL, defaults: defaults)
+    }
+
+    func recordSearch(_ query: String) {
+        let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return }
+        recentSearches.removeAll { $0.caseInsensitiveCompare(query) == .orderedSame }
+        recentSearches.insert(query, at: 0)
+        recentSearches = Array(recentSearches.prefix(Self.maxRecentSearches))
+        defaults.set(recentSearches, forKey: Self.recentSearchesKey)
+    }
+
     /// Renames the file in place; identity (inode) is unchanged, so selection
     /// and history keep working. The extension is preserved.
-    func rename(_ item: DocumentItem, to newTitle: String) throws -> DocumentItem {
+    func rename(
+        _ item: DocumentItem,
+        to newTitle: String,
+        updateInboundLinks: Bool? = nil
+    ) throws -> DocumentItem {
+        guard let rootURL else { throw WriteError.noWorkspace }
         let title = newTitle.trimmingCharacters(in: .whitespaces)
         guard !title.isEmpty, !title.contains("/") else { throw WriteError.invalidTitle }
         guard title != item.title else { return item }
@@ -204,11 +355,53 @@ final class WorkspaceStore {
         guard !FileManager.default.fileExists(atPath: newURL.path) else {
             throw WriteError.nameTaken(newURL.lastPathComponent)
         }
+        let newRelativePath = [item.relativeFolder, newURL.lastPathComponent]
+            .filter { !$0.isEmpty }
+            .joined(separator: "/")
+        let rewrites = (updateInboundLinks ?? settings.alwaysUpdateLinks)
+            ? knowledgeIndex.rewritingInboundLinks(
+                from: item.relativePath,
+                to: newRelativePath
+            )
+            : [:]
+        for sourcePath in rewrites.keys {
+            guard let sourceItem = documents.first(where: { $0.relativePath == sourcePath }),
+                  let open = session.openDocument(id: sourceItem.id) else { continue }
+            if open.hasUnautosavedChanges {
+                throw WriteError.linkedDocumentUnsaved(sourcePath)
+            }
+        }
+
+        var originals: [String: Data] = [:]
+        for sourcePath in rewrites.keys {
+            let sourceURL = sourcePath == item.relativePath
+                ? item.url
+                : rootURL.appendingPathComponent(sourcePath)
+            originals[sourcePath] = try Data(contentsOf: sourceURL)
+        }
+
         try FileManager.default.moveItem(at: item.url, to: newURL)
+        do {
+            for (sourcePath, content) in rewrites {
+                let sourceURL = sourcePath == item.relativePath
+                    ? newURL
+                    : rootURL.appendingPathComponent(sourcePath)
+                try Data(content.utf8).write(to: sourceURL, options: .atomic)
+            }
+        } catch {
+            for (sourcePath, data) in originals {
+                let sourceURL = sourcePath == item.relativePath
+                    ? newURL
+                    : rootURL.appendingPathComponent(sourcePath)
+                try? data.write(to: sourceURL, options: .atomic)
+            }
+            try? FileManager.default.moveItem(at: newURL, to: item.url)
+            throw error
+        }
+
         session.updateURL(id: item.id, to: newURL)
 
-        guard let rootURL,
-              var updated = Self.item(at: newURL, root: rootURL, rootName: rootName ?? "") else {
+        guard var updated = Self.item(at: newURL, root: rootURL, rootName: rootName ?? "") else {
             throw CocoaError(.fileReadUnknown)
         }
         // The stable identity carries over; only the disk inode is re-read.
@@ -219,6 +412,18 @@ final class WorkspaceStore {
         if favoritePaths.remove(item.relativePath) != nil {
             favoritePaths.insert(updated.relativePath)
             persistFavorites()
+        }
+        for sourcePath in rewrites.keys {
+            guard let sourceItem = documents.first(where: {
+                $0.relativePath == sourcePath || (
+                    sourcePath == item.relativePath && $0.id == item.id
+                )
+            }),
+            let open = session.openDocument(id: sourceItem.id) else { continue }
+            let url = sourcePath == item.relativePath
+                ? newURL
+                : rootURL.appendingPathComponent(sourcePath)
+            try? open.revert(toContentsOf: url, ofType: MarkdownDocument.markdownType)
         }
         return updated
     }

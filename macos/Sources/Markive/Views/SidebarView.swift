@@ -10,6 +10,7 @@ struct SidebarView: View {
                 List(selection: $model.sidebarSelection) {
                     librarySection
                     workspaceSection
+                    tagsSection
                     savedSearchesSection
                     recentWorkspacesSection
                 }
@@ -36,6 +37,36 @@ struct SidebarView: View {
             Label("Favorites", systemImage: "star")
                 .tag(SidebarItem.favorites)
                 .badge(model.store.favoriteDocuments.count)
+            Button {
+                model.openToday()
+            } label: {
+                Label("Today", systemImage: "calendar")
+            }
+            .buttonStyle(.plain)
+            if !model.store.settings.homeNote.isEmpty {
+                Button {
+                    model.openHome()
+                } label: {
+                    Label("Home", systemImage: "house")
+                }
+                .buttonStyle(.plain)
+            }
+            if !model.store.settings.defaultFolder.isEmpty {
+                Label("Inbox", systemImage: "tray.and.arrow.down")
+                    .tag(SidebarItem.folder(model.store.settings.defaultFolder))
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var tagsSection: some View {
+        if !model.store.knowledgeIndex.allTags.isEmpty {
+            Section("Tags") {
+                ForEach(model.store.knowledgeIndex.allTags, id: \.self) { tag in
+                    Label(tag, systemImage: "tag")
+                        .tag(SidebarItem.tag(tag))
+                }
+            }
         }
     }
 
@@ -69,7 +100,13 @@ struct SidebarView: View {
         if !others.isEmpty {
             Section("Recent Workspaces") {
                 ForEach(others, id: \.path) { url in
-                    Label(url.lastPathComponent, systemImage: "folder.badge.gearshape")
+                    VStack(alignment: .leading, spacing: 2) {
+                        Label(url.lastPathComponent, systemImage: "folder.badge.gearshape")
+                        Text(url.deletingLastPathComponent().path)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
                         .tag(SidebarItem.recentWorkspace(url))
                         .help(url.path)
                 }
