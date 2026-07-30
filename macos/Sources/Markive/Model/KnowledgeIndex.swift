@@ -423,8 +423,29 @@ struct KnowledgeIndex: Equatable, Sendable {
     /// ambiguous and broken targets stay visibly marked.
     func renderableMarkdown(_ markdown: String, sourcePath: String) -> String {
         guard let source = documentsByPath[sourcePath] else { return markdown }
+        var output = expandEmbeds(
+            in: markdown,
+            sourcePath: sourcePath,
+            renderSourcePath: sourcePath,
+            depth: 0,
+            stack: [sourcePath]
+        )
+        output = rewritingWikilinks(in: output, sourcePath: sourcePath, fallback: source.analysis)
+        return expandDataview(
+            in: strippingLeadingFrontmatter(from: output),
+            sourcePath: sourcePath
+        )
+    }
+
+    private func rewritingWikilinks(
+        in markdown: String,
+        sourcePath: String,
+        fallback: DocumentAnalysis? = nil
+    ) -> String {
+        guard let source = documentsByPath[sourcePath] else { return markdown }
         var output = markdown
-        for link in source.analysis.links
+        let analysis = MarkiveCore.analyzeDocument(markdown: markdown) ?? fallback
+        for link in (analysis?.links ?? [])
             .filter({ $0.kind == .wikilink })
             .sorted(by: { $0.utf16Location > $1.utf16Location }) {
             let range = NSRange(location: link.utf16Location, length: link.utf16Length)
@@ -446,9 +467,173 @@ struct KnowledgeIndex: Equatable, Sendable {
             }
             output.replaceSubrange(swiftRange, with: replacement)
         }
-        return expandDataview(
-            in: strippingLeadingFrontmatter(from: output),
-            sourcePath: sourcePath
+        return output
+    }
+
+    private static let maximumEmbedDepth = 4
+    private static let imageExtensions: Set<String> = [
+        "avif", "bmp", "gif", "heic", "jpeg", "jpg", "png", "svg", "tiff", "webp"
+    ]
+
+    private func expandEmbeds(
+        in markdown: String,
+        sourcePath: String,
+        renderSourcePath: String,
+        depth: Int,
+        stack: Set<String>
+    ) -> String {
+        guard let regex = try? NSRegularExpression(pattern: #"!\[\[([^\]\n]+)\]\]"#) else {
+            return markdown
+        }
+        var output = markdown
+        let matches = regex.matches(
+            in: markdown,
+            range: NSRange(location: 0, length: (markdown as NSString).length)
+        )
+        for match in matches.reversed() {
+            guard let wholeRange = Range(match.range(at: 0), in: output) else { continue }
+            let inner = (markdown as NSString).substring(with: match.range(at: 1))
+            let destination = inner.split(separator: "|", maxSplits: 1)
+                .first.map(String.init)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let parts = destination.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false)
+            let targetName = String(parts.first ?? "")
+            let section = parts.count == 2 ? String(parts[1]) : nil
+
+            let ext = URL(fileURLWithPath: targetName).pathExtension.lowercased()
+            if Self.imageExtensions.contains(ext) {
+                let sourceFolder = documentsByPath[sourcePath]?.relativeFolder ?? ""
+                let workspacePath = normalizedRelativePath(
+                    sourceFolder.isEmpty ? targetName : "\(sourceFolder)/\(targetName)"
+                )
+                let renderFolder = documentsByPath[renderSourcePath]?.relativeFolder ?? ""
+                let relative = relativeLinkPath(from: renderFolder, to: workspacePath)
+                let encoded = percentEncodedPath(relative)
+                output.replaceSubrange(wholeRange, with: "![\(targetName)](\(encoded))")
+                continue
+            }
+
+            let link = IndexedLink(
+                kind: .embed,
+                target: targetName,
+                heading: nil,
+                display: targetName,
+                line: 0,
+                column: 0,
+                utf16Location: 0,
+                utf16Length: 0
+            )
+            let replacement: String
+            switch resolve(link, from: sourcePath) {
+            case .resolved(let target):
+                if stack.contains(target.relativePath) {
+                    replacement = embedPlaceholder("Circular embed: \(target.relativePath)")
+                } else if depth >= Self.maximumEmbedDepth {
+                    replacement = embedPlaceholder("Embed depth limit reached: \(target.relativePath)")
+                } else if let section,
+                          let extracted = extract(section: section, from: target) {
+                    replacement = embeddedBlock(
+                        extracted,
+                        target: target,
+                        renderSourcePath: renderSourcePath,
+                        depth: depth,
+                        stack: stack
+                    )
+                } else if let section {
+                    replacement = embedPlaceholder(
+                        "Missing section: \(target.relativePath)#\(section)"
+                    )
+                } else {
+                    replacement = embeddedBlock(
+                        strippingBlockIdentifiers(
+                            in: strippingLeadingFrontmatter(from: target.content)
+                        ),
+                        target: target,
+                        renderSourcePath: renderSourcePath,
+                        depth: depth,
+                        stack: stack
+                    )
+                }
+            case .ambiguous:
+                replacement = embedPlaceholder("Ambiguous embed: \(targetName)")
+            case .broken:
+                replacement = embedPlaceholder("Missing embed: \(targetName)")
+            case .external:
+                replacement = embedPlaceholder("Unsupported embed: \(targetName)")
+            }
+            output.replaceSubrange(wholeRange, with: replacement)
+        }
+        return output
+    }
+
+    private func embeddedBlock(
+        _ markdown: String,
+        target: IndexedDocument,
+        renderSourcePath: String,
+        depth: Int,
+        stack: Set<String>
+    ) -> String {
+        let expanded = expandEmbeds(
+            in: markdown,
+            sourcePath: target.relativePath,
+            renderSourcePath: renderSourcePath,
+            depth: depth + 1,
+            stack: stack.union([target.relativePath])
+        )
+        let linked = rewritingWikilinks(
+            in: strippingBlockIdentifiers(in: expanded),
+            sourcePath: target.relativePath
+        )
+        let relative = relativeLinkPath(
+            from: documentsByPath[renderSourcePath]?.relativeFolder ?? "",
+            to: target.relativePath
+        )
+        let header = "> [!note] Embedded: [\(escapedMarkdownLabel(target.title))](\(percentEncodedPath(relative)))"
+        let quoted = linked.split(separator: "\n", omittingEmptySubsequences: false)
+            .map { "> \($0)" }
+            .joined(separator: "\n")
+        return "\(header)\n>\n\(quoted)"
+    }
+
+    private func extract(section: String, from document: IndexedDocument) -> String? {
+        if section.hasPrefix("^") {
+            let id = String(section.dropFirst())
+            let lines = document.content.components(separatedBy: .newlines)
+            guard let index = lines.firstIndex(where: {
+                $0.range(of: #"\s+\^\#(NSRegularExpression.escapedPattern(for: id))\s*$"#,
+                         options: .regularExpression) != nil
+            }) else { return nil }
+            return lines[index].replacingOccurrences(
+                of: #"\s+\^\#(NSRegularExpression.escapedPattern(for: id))\s*$"#,
+                with: "",
+                options: .regularExpression
+            )
+        }
+
+        let wanted = slugify(section)
+        guard let heading = document.analysis.headings.first(where: {
+            $0.slug == wanted || $0.text.caseInsensitiveCompare(section) == .orderedSame
+        }) else { return nil }
+        let lines = document.content.components(separatedBy: .newlines)
+        let start = max(heading.line - 1, 0)
+        var end = lines.count
+        for candidate in document.analysis.headings where candidate.line > heading.line {
+            if candidate.level <= heading.level {
+                end = candidate.line - 1
+                break
+            }
+        }
+        return lines[start..<end].joined(separator: "\n")
+    }
+
+    private func embedPlaceholder(_ message: String) -> String {
+        "> [!warning] \(message)"
+    }
+
+    private func strippingBlockIdentifiers(in markdown: String) -> String {
+        markdown.replacingOccurrences(
+            of: #"(?m)[ \t]+\^[A-Za-z0-9-]+[ \t]*$"#,
+            with: "",
+            options: .regularExpression
         )
     }
 

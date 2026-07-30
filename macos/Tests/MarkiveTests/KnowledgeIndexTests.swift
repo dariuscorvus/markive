@@ -201,6 +201,90 @@ private func knowledgeDefaults() -> UserDefaults {
 
         #expect(rewritten["Notes/Source.md"] == "See [target](../../Notes/Target.md).\n")
     }
+
+    @Test func expandsImageDocumentHeadingAndBlockEmbeds() throws {
+        let fixture = try KnowledgeFixture(files: [
+            ("Notes/Source.md", """
+            ![[images/photo.png]]
+
+            ![[Reference]]
+
+            ![[Reference#Details]]
+
+            ![[Reference#^important]]
+            """),
+            ("Notes/Reference.md", """
+            ---
+            status: draft
+            ---
+            # Reference
+
+            Intro.
+
+            ## Details
+
+            Included detail.
+
+            A cited paragraph. ^important
+
+            ## Later
+
+            Excluded detail.
+            """),
+        ])
+        defer { fixture.remove() }
+        let index = KnowledgeIndex.build(documents: fixture.snapshot().documents)
+        let source = try #require(index.documentsByPath["Notes/Source.md"])
+
+        let rendered = index.renderableMarkdown(source.content, sourcePath: source.relativePath)
+
+        #expect(rendered.contains("![images/photo.png](images/photo.png)"))
+        #expect(rendered.contains("Embedded: [Reference](Reference.md)"))
+        #expect(rendered.contains("Included detail."))
+        #expect(rendered.contains("A cited paragraph."))
+        #expect(!rendered.contains("status: draft"))
+        #expect(rendered.components(separatedBy: "Excluded detail.").count == 2)
+        #expect(!rendered.contains("^important"))
+    }
+
+    @Test func embedFailuresAreVisibleAndRecursionIsBounded() throws {
+        let fixture = try KnowledgeFixture(files: [
+            ("A.md", "![[B]]\n\n![[Missing]]\n\n![[B#No Such Heading]]\n\n![[One]]"),
+            ("B.md", "![[A]]"),
+            ("One.md", "![[Two]]"),
+            ("Two.md", "![[Three]]"),
+            ("Three.md", "![[Four]]"),
+            ("Four.md", "![[Five]]"),
+            ("Five.md", "![[Six]]"),
+            ("Six.md", "Too deep"),
+        ])
+        defer { fixture.remove() }
+        let index = KnowledgeIndex.build(documents: fixture.snapshot().documents)
+        let source = try #require(index.documentsByPath["A.md"])
+
+        let rendered = index.renderableMarkdown(source.content, sourcePath: source.relativePath)
+
+        #expect(rendered.contains("Circular embed: A.md"))
+        #expect(rendered.contains("Missing embed: Missing"))
+        #expect(rendered.contains("Missing section: B.md#No Such Heading"))
+        #expect(rendered.contains("Embed depth limit reached: Five.md"))
+        #expect(!rendered.contains("Too deep"))
+        #expect(rendered.utf8.count < 10_000)
+    }
+
+    @Test func nestedImageEmbedsStayRelativeToTheirOwningDocument() throws {
+        let fixture = try KnowledgeFixture(files: [
+            ("Notes/Source.md", "![[../Library/Reference]]"),
+            ("Library/Reference.md", "![[media/nested image.png]]"),
+        ])
+        defer { fixture.remove() }
+        let index = KnowledgeIndex.build(documents: fixture.snapshot().documents)
+        let source = try #require(index.documentsByPath["Notes/Source.md"])
+
+        let rendered = index.renderableMarkdown(source.content, sourcePath: source.relativePath)
+
+        #expect(rendered.contains("(../Library/media/nested%20image.png)"))
+    }
 }
 
 @Suite struct DailyNoteTests {
