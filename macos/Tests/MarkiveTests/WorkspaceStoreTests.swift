@@ -478,6 +478,142 @@ private func isolatedDefaults() -> UserDefaults {
             try? FileManager.default.removeItem(at: trashedURL)
         }
     }
+
+    @MainActor
+    @Test func createsAndRenamesFoldersWithoutOverwritingConflicts() async throws {
+        let fixture = try FixtureWorkspace(files: [("Existing/note.md", "note")])
+        defer { fixture.tearDown() }
+        let store = WorkspaceStore(defaults: isolatedDefaults())
+        await store.openWorkspace(at: fixture.root)
+
+        let created = try store.createFolder(named: "Projects")
+        #expect(created == "Projects")
+        #expect(FileManager.default.fileExists(
+            atPath: fixture.root.appendingPathComponent("Projects").path
+        ))
+        let nested = try store.createFolder(named: "Active", in: "Projects")
+        #expect(nested == "Projects/Active")
+
+        let renamed = try store.renameFolder(relativePath: "Projects", to: "Work")
+        #expect(renamed == "Work")
+        #expect(FileManager.default.fileExists(
+            atPath: fixture.root.appendingPathComponent("Work/Active").path
+        ))
+        #expect(!FileManager.default.fileExists(
+            atPath: fixture.root.appendingPathComponent("Projects").path
+        ))
+
+        #expect(throws: WorkspaceStore.WriteError.self) {
+            try store.renameFolder(relativePath: "Work", to: "Existing")
+        }
+        #expect(throws: WorkspaceStore.WriteError.self) {
+            try store.createFolder(named: "..")
+        }
+        #expect(FileManager.default.fileExists(
+            atPath: fixture.root.appendingPathComponent("Work/Active").path
+        ))
+    }
+
+    @MainActor
+    @Test func movePreservesIdentityFavoriteOpenDocumentHistoryLinksAndIndex() async throws {
+        let fixture = try FixtureWorkspace(files: [
+            ("Notes/Target.md", "# Target"),
+            ("Source.md", "See [[Notes/Target|target]] and [target](Notes/Target.md).\n"),
+            ("Other.md", "# Other"),
+        ])
+        defer { fixture.tearDown() }
+        try FileManager.default.createDirectory(
+            at: fixture.root.appendingPathComponent("Archive"),
+            withIntermediateDirectories: true
+        )
+        let store = WorkspaceStore(defaults: isolatedDefaults())
+        await store.openWorkspace(at: fixture.root)
+        let target = try #require(store.documents.first { $0.relativePath == "Notes/Target.md" })
+        let other = try #require(store.documents.first { $0.relativePath == "Other.md" })
+        store.toggleFavorite(target)
+        let open = try store.session.document(for: target)
+        let model = WorkspaceModel(store: store)
+        model.open(target)
+        model.open(other)
+
+        let moved = try store.move(target, toFolder: "Archive")
+        #expect(moved.id == target.id)
+        #expect(moved.relativePath == "Archive/Target.md")
+        #expect(store.isFavorite(moved))
+        #expect(open.fileURL == moved.url)
+
+        model.goBack()
+        #expect(model.selectedDocument?.id == target.id)
+        #expect(model.selectedDocument?.relativePath == "Archive/Target.md")
+
+        let source = try String(
+            contentsOf: fixture.root.appendingPathComponent("Source.md"),
+            encoding: .utf8
+        )
+        #expect(source.contains("[[Archive/Target|target]]"))
+        #expect(source.contains("[target](Archive/Target.md)"))
+
+        await store.rescan()
+        await store.rebuildIndex()
+        #expect(store.knowledgeIndex.documentsByPath["Archive/Target.md"] != nil)
+        #expect(store.knowledgeIndex.documentsByPath["Notes/Target.md"] == nil)
+    }
+
+    @MainActor
+    @Test func moveConflictLeavesBothFilesUnchanged() async throws {
+        let fixture = try FixtureWorkspace(files: [
+            ("Source/Note.md", "source"),
+            ("Destination/Note.md", "destination"),
+        ])
+        defer { fixture.tearDown() }
+        let store = WorkspaceStore(defaults: isolatedDefaults())
+        await store.openWorkspace(at: fixture.root)
+        let source = try #require(store.documents.first { $0.relativePath == "Source/Note.md" })
+
+        #expect(throws: WorkspaceStore.WriteError.self) {
+            try store.move(source, toFolder: "Destination")
+        }
+        #expect(try String(
+            contentsOf: fixture.root.appendingPathComponent("Source/Note.md"),
+            encoding: .utf8
+        ) == "source")
+        #expect(try String(
+            contentsOf: fixture.root.appendingPathComponent("Destination/Note.md"),
+            encoding: .utf8
+        ) == "destination")
+    }
+
+    @MainActor
+    @Test func folderRenameRewritesLinksForMovedAndExternalSources() async throws {
+        let fixture = try FixtureWorkspace(files: [
+            ("Notes/Target.md", "# Target"),
+            ("Notes/Inside.md", "See [target](Target.md).\n"),
+            ("Outside.md", "See [target](Notes/Target.md) and [[Notes/Target]].\n"),
+        ])
+        defer { fixture.tearDown() }
+        let store = WorkspaceStore(defaults: isolatedDefaults())
+        await store.openWorkspace(at: fixture.root)
+        let target = try #require(store.documents.first { $0.relativePath == "Notes/Target.md" })
+        store.toggleFavorite(target)
+        let open = try store.session.document(for: target)
+
+        let renamed = try store.renameFolder(relativePath: "Notes", to: "Archive")
+        #expect(renamed == "Archive")
+        let moved = try #require(store.documents.first { $0.id == target.id })
+        #expect(moved.relativePath == "Archive/Target.md")
+        #expect(store.isFavorite(moved))
+        #expect(open.fileURL == moved.url)
+        #expect(try String(
+            contentsOf: fixture.root.appendingPathComponent("Archive/Inside.md"),
+            encoding: .utf8
+        ) == "See [target](Target.md).\n")
+        let outside = try String(
+            contentsOf: fixture.root.appendingPathComponent("Outside.md"),
+            encoding: .utf8
+        )
+        #expect(outside.contains("[target](Archive/Target.md)"))
+        #expect(outside.contains("[[Archive/Target]]"))
+    }
 }
 
 @Suite struct FavoritesTests {

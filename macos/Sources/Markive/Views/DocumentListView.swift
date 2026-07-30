@@ -167,6 +167,18 @@ struct DocumentListView: View {
                     updateInboundLinks = model.store.settings.alwaysUpdateLinks
                     renameTarget = document
                 }
+                Menu("Move to") {
+                    Button(model.workspaceName ?? "Workspace") {
+                        model.move(document, toFolder: "")
+                    }
+                    Divider()
+                    ForEach(model.store.folderPaths, id: \.self) { path in
+                        Button(path) {
+                            model.move(document, toFolder: path)
+                        }
+                        .disabled(path == document.relativeFolder)
+                    }
+                }
                 Divider()
                 Button("Copy Path") {
                     NSPasteboard.general.clearContents()

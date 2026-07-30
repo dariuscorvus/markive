@@ -210,6 +210,16 @@ final class WorkspaceStore {
         documents.filter { favoritePaths.contains($0.relativePath) }
     }
 
+    var folderPaths: [String] {
+        Self.flatten(folderTree)
+    }
+
+    nonisolated private static func flatten(_ nodes: [FolderNode]) -> [String] {
+        nodes.flatMap { node in
+            [node.id] + flatten(node.children ?? [])
+        }
+    }
+
     func isFavorite(_ item: DocumentItem) -> Bool {
         favoritePaths.contains(item.relativePath)
     }
@@ -231,7 +241,9 @@ final class WorkspaceStore {
     enum WriteError: LocalizedError {
         case noWorkspace
         case invalidTitle
+        case invalidFolderName
         case nameTaken(String)
+        case folderNotFound(String)
         case outsideWorkspace
         case templateUnreadable(String)
         case linkedDocumentUnsaved(String)
@@ -240,11 +252,13 @@ final class WorkspaceStore {
             switch self {
             case .noWorkspace: "No workspace is open."
             case .invalidTitle: "Document names can't be empty or contain “/”."
-            case .nameTaken(let name): "A file named “\(name)” already exists."
+            case .invalidFolderName: "Folder names can't be empty or contain “/”."
+            case .nameTaken(let name): "An item named “\(name)” already exists."
+            case .folderNotFound(let path): "The folder “\(path)” does not exist."
             case .outsideWorkspace: "The document path must stay inside the open workspace."
             case .templateUnreadable(let path): "The template “\(path)” could not be read."
             case .linkedDocumentUnsaved(let path):
-                "Save “\(path)” before renaming this linked note."
+                "Save “\(path)” before moving or renaming this linked note."
             }
         }
     }
@@ -359,14 +373,78 @@ final class WorkspaceStore {
         defaults.set(recentSearches, forKey: Self.recentSearchesKey)
     }
 
-    /// Renames the file in place; identity (inode) is unchanged, so selection
-    /// and history keep working. The extension is preserved.
+    @discardableResult
+    func createFolder(named requestedName: String, in parentPath: String? = nil) throws -> String {
+        guard let rootURL else { throw WriteError.noWorkspace }
+        let name = requestedName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, !name.contains("/"), name != ".", name != ".." else {
+            throw WriteError.invalidFolderName
+        }
+        let parent = try folderURL(relativePath: parentPath ?? "", root: rootURL)
+        let destination = parent.appendingPathComponent(name, isDirectory: true)
+        guard !FileManager.default.fileExists(atPath: destination.path) else {
+            throw WriteError.nameTaken(name)
+        }
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: false)
+        return relativePath(for: destination, root: rootURL)
+    }
+
+    /// Renames a folder and every affected link as one transaction.
+    @discardableResult
+    func renameFolder(
+        relativePath oldPath: String,
+        to requestedName: String,
+        updateInboundLinks: Bool? = nil
+    ) throws -> String {
+        guard let rootURL else { throw WriteError.noWorkspace }
+        let name = requestedName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, !name.contains("/"), name != ".", name != ".." else {
+            throw WriteError.invalidFolderName
+        }
+        let oldURL = try folderURL(relativePath: oldPath, root: rootURL)
+        guard oldURL != rootURL else { throw WriteError.outsideWorkspace }
+        let newURL = oldURL.deletingLastPathComponent()
+            .appendingPathComponent(name, isDirectory: true)
+        guard oldURL != newURL else { return oldPath }
+        guard !FileManager.default.fileExists(atPath: newURL.path) else {
+            throw WriteError.nameTaken(name)
+        }
+
+        let newPath = relativePath(for: newURL, root: rootURL)
+        let affected = documents.filter {
+            $0.relativeFolder == oldPath || $0.relativeFolder.hasPrefix(oldPath + "/")
+        }
+        let paths = Dictionary(uniqueKeysWithValues: affected.map { item in
+            let suffix = item.relativePath.dropFirst(oldPath.count)
+            return (item.relativePath, newPath + suffix)
+        })
+        let rewrites = (updateInboundLinks ?? settings.alwaysUpdateLinks)
+            ? knowledgeIndex.rewritingInboundLinks(moving: paths)
+            : [:]
+        try ensureRewritable(rewrites)
+        let originals = try originalData(for: rewrites.keys)
+
+        try FileManager.default.moveItem(at: oldURL, to: newURL)
+        do {
+            try writeRewrites(rewrites, movedPaths: paths)
+        } catch {
+            restore(originals, movedPaths: paths)
+            try? FileManager.default.moveItem(at: newURL, to: oldURL)
+            throw error
+        }
+
+        updateMovedDocuments(paths: paths)
+        updateOpenRewrittenDocuments(rewrites.keys, movedPaths: paths)
+        return newPath
+    }
+
+    /// Renames the file in place. Identity survives because relocation keeps
+    /// the same stable `FileID`.
     func rename(
         _ item: DocumentItem,
         to newTitle: String,
         updateInboundLinks: Bool? = nil
     ) throws -> DocumentItem {
-        guard let rootURL else { throw WriteError.noWorkspace }
         let title = newTitle.trimmingCharacters(in: .whitespaces)
         guard !title.isEmpty, !title.contains("/") else { throw WriteError.invalidTitle }
         guard title != item.title else { return item }
@@ -374,18 +452,60 @@ final class WorkspaceStore {
         let newURL = item.url.deletingLastPathComponent()
             .appendingPathComponent(title)
             .appendingPathExtension(item.url.pathExtension)
+        return try relocate(item, to: newURL, updateInboundLinks: updateInboundLinks)
+    }
+
+    /// Moves a Markdown file to an existing folder inside the workspace.
+    func move(
+        _ item: DocumentItem,
+        toFolder relativeFolder: String,
+        updateInboundLinks: Bool? = nil
+    ) throws -> DocumentItem {
+        guard let rootURL else { throw WriteError.noWorkspace }
+        let folder = try folderURL(relativePath: relativeFolder, root: rootURL)
+        let destination = folder.appendingPathComponent(item.url.lastPathComponent)
+        guard destination != item.url else { return item }
+        return try relocate(item, to: destination, updateInboundLinks: updateInboundLinks)
+    }
+
+    private func relocate(
+        _ item: DocumentItem,
+        to newURL: URL,
+        updateInboundLinks: Bool?
+    ) throws -> DocumentItem {
+        guard let rootURL else { throw WriteError.noWorkspace }
+        guard newURL.canonicalPath.hasPrefix(rootURL.canonicalPath + "/") else {
+            throw WriteError.outsideWorkspace
+        }
         guard !FileManager.default.fileExists(atPath: newURL.path) else {
             throw WriteError.nameTaken(newURL.lastPathComponent)
         }
-        let newRelativePath = [item.relativeFolder, newURL.lastPathComponent]
-            .filter { !$0.isEmpty }
-            .joined(separator: "/")
+        let newRelativePath = relativePath(for: newURL, root: rootURL)
+        let paths = [item.relativePath: newRelativePath]
         let rewrites = (updateInboundLinks ?? settings.alwaysUpdateLinks)
-            ? knowledgeIndex.rewritingInboundLinks(
-                from: item.relativePath,
-                to: newRelativePath
-            )
+            ? knowledgeIndex.rewritingInboundLinks(moving: paths)
             : [:]
+        try ensureRewritable(rewrites)
+        let originals = try originalData(for: rewrites.keys)
+
+        try FileManager.default.moveItem(at: item.url, to: newURL)
+        do {
+            try writeRewrites(rewrites, movedPaths: paths)
+        } catch {
+            restore(originals, movedPaths: paths)
+            try? FileManager.default.moveItem(at: newURL, to: item.url)
+            throw error
+        }
+
+        updateMovedDocuments(paths: paths)
+        updateOpenRewrittenDocuments(rewrites.keys, movedPaths: paths)
+        guard let updated = documents.first(where: { $0.id == item.id }) else {
+            throw CocoaError(.fileReadUnknown)
+        }
+        return updated
+    }
+
+    private func ensureRewritable(_ rewrites: [String: String]) throws {
         for sourcePath in rewrites.keys {
             guard let sourceItem = documents.first(where: { $0.relativePath == sourcePath }),
                   let open = session.openDocument(id: sourceItem.id) else { continue }
@@ -393,61 +513,96 @@ final class WorkspaceStore {
                 throw WriteError.linkedDocumentUnsaved(sourcePath)
             }
         }
+    }
 
-        var originals: [String: Data] = [:]
-        for sourcePath in rewrites.keys {
-            let sourceURL = sourcePath == item.relativePath
-                ? item.url
-                : rootURL.appendingPathComponent(sourcePath)
-            originals[sourcePath] = try Data(contentsOf: sourceURL)
+    private func originalData(for sourcePaths: Dictionary<String, String>.Keys) throws -> [String: Data] {
+        guard let rootURL else { throw WriteError.noWorkspace }
+        return try Dictionary(uniqueKeysWithValues: sourcePaths.map {
+            ($0, try Data(contentsOf: rootURL.appendingPathComponent($0)))
+        })
+    }
+
+    private func writeRewrites(
+        _ rewrites: [String: String],
+        movedPaths: [String: String]
+    ) throws {
+        guard let rootURL else { throw WriteError.noWorkspace }
+        for (sourcePath, content) in rewrites {
+            let currentPath = movedPaths[sourcePath] ?? sourcePath
+            try Data(content.utf8).write(
+                to: rootURL.appendingPathComponent(currentPath),
+                options: .atomic
+            )
         }
+    }
 
-        try FileManager.default.moveItem(at: item.url, to: newURL)
-        do {
-            for (sourcePath, content) in rewrites {
-                let sourceURL = sourcePath == item.relativePath
-                    ? newURL
-                    : rootURL.appendingPathComponent(sourcePath)
-                try Data(content.utf8).write(to: sourceURL, options: .atomic)
-            }
-        } catch {
-            for (sourcePath, data) in originals {
-                let sourceURL = sourcePath == item.relativePath
-                    ? newURL
-                    : rootURL.appendingPathComponent(sourcePath)
-                try? data.write(to: sourceURL, options: .atomic)
-            }
-            try? FileManager.default.moveItem(at: newURL, to: item.url)
-            throw error
+    private func restore(_ originals: [String: Data], movedPaths: [String: String]) {
+        guard let rootURL else { return }
+        for (sourcePath, data) in originals {
+            let currentPath = movedPaths[sourcePath] ?? sourcePath
+            try? data.write(to: rootURL.appendingPathComponent(currentPath), options: .atomic)
         }
+    }
 
-        session.updateURL(id: item.id, to: newURL)
-
-        guard var updated = Self.item(at: newURL, root: rootURL, rootName: rootName ?? "") else {
-            throw CocoaError(.fileReadUnknown)
-        }
-        // The stable identity carries over; only the disk inode is re-read.
-        updated.id = item.id
-        if let index = documents.firstIndex(where: { $0.id == item.id }) {
+    private func updateMovedDocuments(paths: [String: String]) {
+        guard let rootURL else { return }
+        for (oldPath, newPath) in paths {
+            guard let index = documents.firstIndex(where: { $0.relativePath == oldPath }),
+                  var updated = Self.item(
+                    at: rootURL.appendingPathComponent(newPath),
+                    root: rootURL,
+                    rootName: rootName ?? ""
+                  ) else { continue }
+            let previous = documents[index]
+            updated.id = previous.id
             documents[index] = updated
+            session.updateURL(id: previous.id, to: updated.url)
+            if favoritePaths.remove(oldPath) != nil {
+                favoritePaths.insert(newPath)
+            }
         }
-        if favoritePaths.remove(item.relativePath) != nil {
-            favoritePaths.insert(updated.relativePath)
-            persistFavorites()
+        persistFavorites()
+    }
+
+    private func updateOpenRewrittenDocuments(
+        _ sourcePaths: Dictionary<String, String>.Keys,
+        movedPaths: [String: String]
+    ) {
+        guard let rootURL else { return }
+        for sourcePath in sourcePaths {
+            let currentPath = movedPaths[sourcePath] ?? sourcePath
+            guard let sourceItem = documents.first(where: { $0.relativePath == currentPath }),
+                  let open = session.openDocument(id: sourceItem.id) else { continue }
+            try? open.revert(
+                toContentsOf: rootURL.appendingPathComponent(currentPath),
+                ofType: MarkdownDocument.markdownType
+            )
         }
-        for sourcePath in rewrites.keys {
-            guard let sourceItem = documents.first(where: {
-                $0.relativePath == sourcePath || (
-                    sourcePath == item.relativePath && $0.id == item.id
-                )
-            }),
-            let open = session.openDocument(id: sourceItem.id) else { continue }
-            let url = sourcePath == item.relativePath
-                ? newURL
-                : rootURL.appendingPathComponent(sourcePath)
-            try? open.revert(toContentsOf: url, ofType: MarkdownDocument.markdownType)
+    }
+
+    private func folderURL(relativePath path: String, root: URL) throws -> URL {
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.hasPrefix("/"),
+              !trimmed.split(separator: "/").contains("..") else {
+            throw WriteError.outsideWorkspace
         }
-        return updated
+        let url = trimmed.isEmpty
+            ? root
+            : root.appendingPathComponent(trimmed, isDirectory: true)
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            throw WriteError.folderNotFound(trimmed)
+        }
+        guard url.canonicalPath == root.canonicalPath
+                || url.canonicalPath.hasPrefix(root.canonicalPath + "/") else {
+            throw WriteError.outsideWorkspace
+        }
+        return url.standardizedFileURL
+    }
+
+    private func relativePath(for url: URL, root: URL) -> String {
+        String(url.standardizedFileURL.path.dropFirst(root.standardizedFileURL.path.count + 1))
     }
 
     /// Moves the file to the Trash and forgets it. Returns the trashed URL.
