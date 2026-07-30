@@ -145,6 +145,7 @@ fn markdown_options() -> Options {
     options.insert(Options::ENABLE_STRIKETHROUGH);
     options.insert(Options::ENABLE_TABLES);
     options.insert(Options::ENABLE_TASKLISTS);
+    options.insert(Options::ENABLE_FOOTNOTES);
     options
 }
 
@@ -157,14 +158,16 @@ fn sanitize(html: &str) -> String {
             "details", "summary", "dialog", "data", "mark", "meter", "progress", "time",
             "input", "button",
         ])
-        .add_tag_attributes("div", ["class", "id"])
+        .add_tag_attributes("div", ["class", "id", "tabindex"])
         .add_tag_attributes("section", ["class", "id"])
         .add_tag_attributes("article", ["class", "id"])
         .add_tag_attributes("figure", ["class", "id"])
         // `language-xxx` on `<code>` and `tok-xxx` on `<span>`, both from
         // the fenced-code-block highlighter's own fixed vocabulary.
         .add_tag_attributes("code", ["class"])
-        .add_tag_attributes("span", ["class"])
+        .add_tag_attributes("span", ["class", "id"])
+        .add_tag_attributes("sup", ["class", "id", "tabindex"])
+        .add_tag_attributes("a", ["class", "id"])
         .add_tag_attributes("details", ["open"])
         .add_tag_attributes("input", ["checked", "disabled", "type"])
         .add_tag_attributes("button", ["disabled", "type"])
@@ -235,6 +238,107 @@ fn events_with_heading_ids(markdown: &str) -> Vec<Event<'_>> {
     }
 
     events
+}
+
+/// Gives every footnote reference its own anchor, adds a backlink from each
+/// definition to every reference, and leaves missing definitions visibly
+/// unresolved. The generated links are native anchors, so `WebKit` exposes them
+/// to Tab/Shift-Tab and Return without JavaScript.
+fn events_with_footnote_navigation(events: Vec<Event<'_>>) -> Vec<Event<'_>> {
+    use std::collections::{HashMap, HashSet};
+
+    let definitions: HashSet<String> = events
+        .iter()
+        .filter_map(|event| match event {
+            Event::Start(Tag::FootnoteDefinition(name)) => Some(name.to_string()),
+            _ => None,
+        })
+        .collect();
+    let mut reference_totals = HashMap::<String, usize>::new();
+    for event in &events {
+        if let Event::FootnoteReference(name) = event {
+            *reference_totals.entry(name.to_string()).or_default() += 1;
+        }
+    }
+
+    let mut numbers = HashMap::<String, usize>::new();
+    let mut reference_counts = HashMap::<String, usize>::new();
+    let mut definition_stack = Vec::<String>::new();
+    let mut output = Vec::with_capacity(events.len());
+
+    for event in events {
+        match event {
+            Event::FootnoteReference(name) => {
+                let label = name.to_string();
+                if !definitions.contains(&label) {
+                    let mut escaped = String::new();
+                    escape_html_text(&mut escaped, &label);
+                    output.push(Event::Html(
+                        format!(
+                            "<sup class=\"footnote-reference unresolved-footnote\">[^{escaped}]</sup>"
+                        )
+                        .into(),
+                    ));
+                    continue;
+                }
+                let next_number = numbers.len() + 1;
+                let number = *numbers.entry(label.clone()).or_insert(next_number);
+                let ordinal = reference_counts.entry(label.clone()).or_default();
+                *ordinal += 1;
+                let id = footnote_id(&label);
+                output.push(Event::Html(
+                    format!(
+                        "<sup class=\"footnote-reference\" id=\"fnref-{id}-{ordinal}\" tabindex=\"-1\"><a href=\"#fn-{id}\">{number}</a></sup>"
+                    )
+                    .into(),
+                ));
+            }
+            Event::Start(Tag::FootnoteDefinition(name)) => {
+                let label = name.to_string();
+                let next_number = numbers.len() + 1;
+                let number = *numbers.entry(label.clone()).or_insert(next_number);
+                let id = footnote_id(&label);
+                definition_stack.push(label);
+                output.push(Event::Html(
+                    format!(
+                        "<div class=\"footnote-definition\" id=\"fn-{id}\" tabindex=\"-1\"><sup class=\"footnote-definition-label\">{number}</sup>"
+                    )
+                    .into(),
+                ));
+            }
+            Event::End(TagEnd::FootnoteDefinition) => {
+                if let Some(label) = definition_stack.pop() {
+                    let id = footnote_id(&label);
+                    let total = reference_totals.get(&label).copied().unwrap_or_default();
+                    let mut backlinks = String::from("<span class=\"footnote-backlinks\">");
+                    for ordinal in 1..=total {
+                        let suffix = if ordinal == 1 {
+                            String::new()
+                        } else {
+                            ordinal.to_string()
+                        };
+                        let _ = write!(
+                            backlinks,
+                            " <a href=\"#fnref-{id}-{ordinal}\" class=\"footnote-backlink\">↩{suffix}</a>"
+                        );
+                    }
+                    backlinks.push_str("</span></div>");
+                    output.push(Event::Html(backlinks.into()));
+                }
+            }
+            other => output.push(other),
+        }
+    }
+    output
+}
+
+fn footnote_id(label: &str) -> String {
+    let slug = slugify(label);
+    let mut bytes = String::new();
+    for byte in label.as_bytes() {
+        let _ = write!(bytes, "{byte:02x}");
+    }
+    format!("{}-{bytes}", if slug.is_empty() { "note" } else { &slug })
 }
 
 /// Replaces each fenced code block that names a recognized language with
@@ -324,7 +428,9 @@ fn escape_html_text(out: &mut String, text: &str) {
 #[must_use]
 pub fn render_markdown(markdown: &str) -> String {
     let mut html = String::new();
-    let events = highlight_code_blocks(events_with_heading_ids(markdown));
+    let events = highlight_code_blocks(events_with_footnote_navigation(
+        events_with_heading_ids(markdown),
+    ));
     pulldown_cmark::html::push_html(&mut html, events.into_iter());
 
     sanitize(&html)
@@ -344,7 +450,7 @@ pub fn render_markdown(markdown: &str) -> String {
 /// sources have nothing to resolve against and pass through untouched.
 #[must_use]
 pub fn render_document(markdown: &str, base_dir: Option<&Path>) -> RenderedDocument {
-    let events = events_with_heading_ids(markdown)
+    let events = events_with_footnote_navigation(events_with_heading_ids(markdown))
         .into_iter()
         .map(|event| match event {
             // Local link targets become absolute so the app can open
@@ -803,6 +909,30 @@ mod tests {
         assert!(html.contains("<h1 id=\"my-heading\">"));
         assert!(html.contains("<h2 id=\"my-heading-1\">"));
         assert!(html.contains("<h3 id=\"config-opts\">"));
+    }
+
+    #[test]
+    fn footnotes_have_distinct_references_and_backlinks() {
+        let html = render_markdown(
+            "First[^note] and repeated[^note].\n\n[^note]: A defined footnote.\n",
+        );
+
+        assert!(html.contains("id=\"fnref-note-6e6f7465-1\""));
+        assert!(html.contains("id=\"fnref-note-6e6f7465-2\""));
+        assert!(html.contains("href=\"#fn-note-6e6f7465\""));
+        assert!(html.contains("id=\"fn-note-6e6f7465\""));
+        assert!(html.contains("href=\"#fnref-note-6e6f7465-1\""));
+        assert!(html.contains("href=\"#fnref-note-6e6f7465-2\""));
+        assert!(html.contains(">↩</a>"));
+        assert!(html.contains(">↩2</a>"));
+    }
+
+    #[test]
+    fn missing_footnotes_remain_visible_and_unlinked() {
+        let html = render_markdown("Missing[^nowhere].");
+
+        assert!(html.contains("[^nowhere]"));
+        assert!(!html.contains("href=\"#fn-nowhere"));
     }
 
     #[test]
