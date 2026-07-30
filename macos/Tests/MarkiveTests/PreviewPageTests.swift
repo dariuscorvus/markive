@@ -11,6 +11,8 @@ import Testing
         #expect(!page.contains("<title>A <b>"))
         #expect(page.contains("a:focus-visible"))
         #expect(page.contains(".footnote-definition"))
+        #expect(page.contains("math.dataset.source"))
+        #expect(page.contains(".math-expression"))
     }
 
     @Test func containmentAllowsInsideAndDeniesOutside() throws {

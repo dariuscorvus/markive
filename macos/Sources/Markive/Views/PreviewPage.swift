@@ -22,6 +22,7 @@ enum PreviewPage {
         <script src="\(mermaidScriptURL)"></script>
         <script>\(mermaidBootstrap)</script>
         <script>\(calloutBootstrap)</script>
+        <script>\(mathCopyBootstrap)</script>
         </head>
         <body><article id="content" class="markdown-body">
         \(body)
@@ -130,6 +131,23 @@ enum PreviewPage {
             window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', renderAll);
         }
     })();
+    """
+
+    /// MathML is rendered locally by markive-core. Copying a complete math
+    /// expression returns its original dollar-delimited source instead of the
+    /// browser's flattened visual text.
+    static let mathCopyBootstrap = """
+    document.addEventListener('copy', function (event) {
+        var selection = window.getSelection();
+        if (!selection || selection.rangeCount !== 1) return;
+        var range = selection.getRangeAt(0);
+        var node = range.commonAncestorContainer;
+        var element = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+        var math = element && element.closest ? element.closest('.math-expression') : null;
+        if (!math || !math.dataset.source) return;
+        event.preventDefault();
+        event.clipboardData.setData('text/plain', math.dataset.source);
+    });
     """
 
     /// Converts sanitized blockquotes beginning with Obsidian's `[!type]`
@@ -294,6 +312,18 @@ enum PreviewPage {
     .footnote-definition-label { color: var(--fg); }
     .footnote-backlinks { white-space: nowrap; }
     .unresolved-footnote { color: var(--danger); text-decoration: underline wavy; }
+    .math-expression { font-size: 1.08em; user-select: all; }
+    .math-display {
+        display: block;
+        margin: 1em 0;
+        overflow-x: auto;
+        text-align: center;
+    }
+    .math-error {
+        color: var(--danger);
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    .math-error-message { font: 12px/1.4 -apple-system, system-ui, sans-serif; }
     .broken-link { color: var(--danger); text-decoration: underline wavy; }
     .ambiguous-link { color: #ff9500; text-decoration: underline dotted; }
     p, ul, ol, blockquote, table, pre { margin: 0 0 1em; }
