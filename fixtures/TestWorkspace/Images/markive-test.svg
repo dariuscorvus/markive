@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="240" viewBox="0 0 640 240">
+  <rect width="640" height="240" rx="32" fill="#17191f"/>
+  <circle cx="120" cy="120" r="64" fill="#78a9ff"/>
+  <path d="M92 120h56M120 92v56" stroke="#17191f" stroke-width="16" stroke-linecap="round"/>
+  <text x="220" y="136" fill="#f3f4f6" font-family="system-ui, sans-serif" font-size="48">Markive image embed</text>
+</svg>
