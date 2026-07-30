@@ -4,6 +4,22 @@ All notable changes to Markive are documented here.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-31
+
+### Added
+
+- Side-by-side document views with independent selection, scroll position, presentation state, link navigation, and session restoration.
+- Folder creation and rename, file moves, and drag-to-folder actions with conflict checks and link updates.
+- Inline rendering for image, Markdown file, heading, and block embeds with bounded recursion and visible failure states.
+- Footnote references, definitions, distinct backlinks, unresolved states, and keyboard navigation.
+- Offline inline and block math rendering with source-preserving copy and visible errors for invalid expressions.
+
+### Changed
+
+- Large workspaces can be navigated before a complete recursive scan finishes.
+- Hidden-file and ignore behavior is shared by the explorer, Quick Open, search, and the knowledge index.
+- Empty folders and modified-file state are visible in the explorer.
+
 ## [0.2.0] - 2026-07-30
 
 ### Added
@@ -64,7 +80,8 @@ All notable changes to Markive are documented here.
 - The first Markive release: a Markdown viewer and editor for macOS.
 - Finder open, drag and drop, local images and links, source and rendered views, atomic saving, external-change handling, native menus, appearance settings, session restoration, accessibility coverage, the command-line tool, and universal DMG packaging.
 
-[Unreleased]: https://github.com/dariuscorvus/markive/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/dariuscorvus/markive/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/dariuscorvus/markive/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/dariuscorvus/markive/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/dariuscorvus/markive/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/dariuscorvus/markive/compare/v0.1.0...v0.1.1
