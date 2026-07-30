@@ -48,13 +48,13 @@ Tags matching `v*` trigger [`native-release.yml`](.github/workflows/native-relea
 
 ```bash
 git fetch origin main
-git tag -a v0.2.0 origin/main -m v0.2.0
-git push origin v0.2.0
+git tag -a v0.3.0 origin/main -m v0.3.0
+git push origin v0.3.0
 ```
 
 - Keep the version in `Cargo.toml`, `Cargo.lock`, and `macos/project.yml` aligned with the tag.
 - `workflow_dispatch` (Actions tab → Release → Run workflow) builds the same DMG as a run artifact without publishing anything — a dry run.
-- Watch it with `gh run list --workflow=native-release.yml`, or check the result with `gh release view v0.2.0`.
+- Watch it with `gh run list --workflow=native-release.yml`, or check the result with `gh release view v0.3.0`.
 
 ### Building the DMG locally
 
