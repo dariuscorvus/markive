@@ -7,7 +7,7 @@
 # build-ffi.sh with CONFIGURATION=Release, which builds both arm64 and
 # x86_64 slices on its own — no separate FFI build step needed here.
 #
-# Output: Markive-native_local.dmg in the repo root.
+# Output: Markive_local.dmg in the repo root.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
@@ -27,7 +27,7 @@ ln -s /Applications "$staging/Applications"
 cp macos/Resources/AppIcon.icns "$staging/.VolumeIcon.icns"
 SetFile -a C "$staging"
 
-dmg="Markive-native_local.dmg"
+dmg="Markive_local.dmg"
 hdiutil create -volname "Markive" -srcfolder "$staging" -ov -format UDZO "$dmg"
 rm -rf "$staging"
 

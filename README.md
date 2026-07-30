@@ -44,17 +44,17 @@ Builds `markive-ffi` (the Rust core), then the SwiftUI app, and launches it. See
 
 ## Releasing
 
-Tags matching `native-v*` trigger [`native-release.yml`](.github/workflows/native-release.yml), which builds a universal DMG and publishes it as a prerelease.
+Tags matching `v*` trigger [`native-release.yml`](.github/workflows/native-release.yml), which builds a universal DMG and publishes it as the latest stable release. Add the release notes to [`CHANGELOG.md`](CHANGELOG.md) before tagging.
 
 ```bash
 git fetch origin main
-git tag -a native-v0.1.8-alpha origin/main -m native-v0.1.8-alpha
-git push origin native-v0.1.8-alpha
+git tag -a v0.2.0 origin/main -m v0.2.0
+git push origin v0.2.0
 ```
 
-- Version numbers aren't tracked in `project.yml` — each tag just bumps the patch version by convention; check the latest with `git tag -l "native-v*" | sort -V`.
-- `workflow_dispatch` (Actions tab → Native release → Run workflow) builds the same DMG as a run artifact without publishing anything — a dry run.
-- Watch it with `gh run list --workflow=native-release.yml`, or check the result with `gh release view native-v0.1.8-alpha`.
+- Keep the version in `Cargo.toml`, `Cargo.lock`, and `macos/project.yml` aligned with the tag.
+- `workflow_dispatch` (Actions tab → Release → Run workflow) builds the same DMG as a run artifact without publishing anything — a dry run.
+- Watch it with `gh run list --workflow=native-release.yml`, or check the result with `gh release view v0.2.0`.
 
 ### Building the DMG locally
 
@@ -64,7 +64,7 @@ To test a release build before tagging, without pushing anything:
 macos/scripts/build-dmg.sh
 ```
 
-Runs the same steps as the workflow — `xcodegen generate`, an ad-hoc-signed sandboxed Release `xcodebuild`, then `hdiutil` — and produces a universal `Markive-native_local.dmg` in the repo root. Needs Xcode and `brew install xcodegen`.
+Runs the same steps as the workflow — `xcodegen generate`, an ad-hoc-signed sandboxed Release `xcodebuild`, then `hdiutil` — and produces a universal `Markive_local.dmg` in the repo root. Needs Xcode and `brew install xcodegen`.
 
 ## Command line
 
