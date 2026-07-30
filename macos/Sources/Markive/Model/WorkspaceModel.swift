@@ -8,6 +8,7 @@ enum SidebarItem: Hashable {
     case favorites
     case workspaceRoot
     case folder(String)
+    case tag(String)
     case savedSearch(SavedSearch)
     case recentWorkspace(URL)
 }
@@ -96,6 +97,18 @@ struct OpenedDocument {
     }
 }
 
+struct EditorNavigationRequest: Equatable {
+    var documentID: FileID
+    var range: NSRange
+    var token = UUID()
+}
+
+struct PreviewNavigationRequest: Equatable {
+    var documentID: FileID
+    var anchor: String
+    var token = UUID()
+}
+
 /// Per-window navigation and selection state. Document data lives in
 /// `WorkspaceStore`, which is shared across windows.
 @MainActor
@@ -114,6 +127,7 @@ final class WorkspaceModel {
                 Task { @MainActor in
                     sidebarSelection = .allDocuments
                     await store.openWorkspace(at: url)
+                    openHome()
                 }
             }
         }
@@ -131,7 +145,11 @@ final class WorkspaceModel {
     var searchText = ""
     var isInspectorPresented = false
     var isQuickOpenPresented = false
+    var isKnowledgeSearchPresented = false
+    var isTemplatePickerPresented = false
     var isWorkspaceImporterPresented = false
+    var pendingEditorNavigation: EditorNavigationRequest?
+    var pendingPreviewNavigation: PreviewNavigationRequest?
 
     /// Drives `NavigationSplitView`'s columnVisibility. Kept as a plain `@State`
     /// in `MainWindowView` rather than here — a `NavigationSplitView` bound to an
@@ -206,6 +224,7 @@ final class WorkspaceModel {
         case .favorites: "Favorites"
         case .workspaceRoot: workspaceName ?? "Workspace"
         case .folder(let path): path.components(separatedBy: "/").last ?? path
+        case .tag(let tag): "#\(tag)"
         case .savedSearch(let search): search.rawValue
         case .recentWorkspace(let url): url.lastPathComponent
         }
@@ -224,6 +243,11 @@ final class WorkspaceModel {
             return store.favoriteDocuments
         case .folder(let path):
             return all.filter { $0.relativeFolder == path || $0.relativeFolder.hasPrefix(path + "/") }
+        case .tag(let tag):
+            let ids = Set(store.knowledgeIndex.documents.filter {
+                $0.analysis.tags.contains { $0.caseInsensitiveCompare(tag) == .orderedSame }
+            }.map(\.id))
+            return all.filter { ids.contains($0.id) }
         case .savedSearch(.modifiedToday):
             return all.filter { Calendar.current.isDateInToday($0.modifiedAt) }
         }
@@ -358,14 +382,110 @@ final class WorkspaceModel {
             let item = try store.createDocument(inFolder: folder)
             searchText = ""
             setDocumentSelection([item.id])
+            presentation = .editor
+            requestEditorFocus(for: item, range: NSRange(location: 0, length: 0))
+            Task { await store.rebuildIndex() }
         } catch {
             lastErrorMessage = error.localizedDescription
         }
     }
 
-    func rename(_ item: DocumentItem, to newTitle: String) {
+    @discardableResult
+    func createDocument(named requestedTitle: String, content: String = "") -> DocumentItem? {
+        let title = requestedTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty else { return nil }
+        let explicitPath = title.contains("/")
+        let selectedFolder: String? = if case .folder(let path) = sidebarSelection { path } else { nil }
+        let folder = if explicitPath {
+            ""
+        } else if !store.settings.defaultFolder.isEmpty {
+            store.settings.defaultFolder
+        } else {
+            selectedFolder ?? ""
+        }
+        let relativePath = [folder, title].filter { !$0.isEmpty }.joined(separator: "/")
+
         do {
-            _ = try store.rename(item, to: newTitle)
+            let result = try store.createDocument(relativePath: relativePath, content: content)
+            searchText = ""
+            open(result.0)
+            presentation = .editor
+            requestEditorFocus(for: result.0, range: NSRange(location: 0, length: 0))
+            Task { await store.rebuildIndex() }
+            return result.0
+        } catch {
+            lastErrorMessage = error.localizedDescription
+            return nil
+        }
+    }
+
+    func openToday() {
+        do {
+            let result = try store.createDailyDocument()
+            open(result.0)
+            if result.created {
+                presentation = .editor
+                requestEditorFocus(for: result.0, range: NSRange(location: 0, length: 0))
+                Task { await store.rebuildIndex() }
+            }
+        } catch {
+            lastErrorMessage = error.localizedDescription
+        }
+    }
+
+    func createDocument(named title: String, from template: DocumentItem) {
+        do {
+            let content = try store.contentFromTemplate(template, title: title)
+            createDocument(named: title, content: content)
+        } catch {
+            lastErrorMessage = error.localizedDescription
+        }
+    }
+
+    func openHome() {
+        guard !store.settings.homeNote.isEmpty else { return }
+        openDocument(relativePath: store.settings.homeNote)
+    }
+
+    func openDocument(relativePath: String, heading: String? = nil) {
+        let normalized = relativePath.removingPercentEncoding ?? relativePath
+        guard let item = store.documents.first(where: {
+            $0.relativePath.caseInsensitiveCompare(normalized) == .orderedSame
+                || $0.relativePath.caseInsensitiveCompare(normalized + ".md") == .orderedSame
+        }) else { return }
+        open(item)
+        if let heading {
+            presentation = .preview
+            pendingPreviewNavigation = PreviewNavigationRequest(
+                documentID: item.id,
+                anchor: heading
+            )
+        }
+    }
+
+    func openSearchResult(_ result: SearchResult) {
+        guard let item = store.documents.first(where: { $0.id == result.documentID }) else { return }
+        open(item)
+        presentation = .editor
+        requestEditorFocus(
+            for: item,
+            range: NSRange(location: result.utf16Location, length: result.utf16Length)
+        )
+        isKnowledgeSearchPresented = false
+    }
+
+    private func requestEditorFocus(for item: DocumentItem, range: NSRange) {
+        pendingEditorNavigation = EditorNavigationRequest(documentID: item.id, range: range)
+    }
+
+    func rename(_ item: DocumentItem, to newTitle: String, updateInboundLinks: Bool? = nil) {
+        do {
+            _ = try store.rename(
+                item,
+                to: newTitle,
+                updateInboundLinks: updateInboundLinks
+            )
+            Task { await store.rescan() }
         } catch {
             lastErrorMessage = error.localizedDescription
         }
@@ -377,6 +497,7 @@ final class WorkspaceModel {
             documentSelection.remove(item.id)
             backStack.removeAll { $0 == item.id }
             forwardStack.removeAll { $0 == item.id }
+            Task { await store.rebuildIndex() }
         } catch {
             lastErrorMessage = error.localizedDescription
         }
@@ -393,10 +514,17 @@ final class WorkspaceModel {
 
     /// Open a workspace document by absolute path — preview links arrive this
     /// way because render_document resolves local targets to absolute paths.
-    func openDocument(atAbsolutePath path: String) {
+    func openDocument(atAbsolutePath path: String, heading: String? = nil) {
         let canonical = URL(fileURLWithPath: path).canonicalPath
         guard let item = store.documents.first(where: { $0.url.path == canonical }) else { return }
         open(item)
+        if let heading {
+            presentation = .preview
+            pendingPreviewNavigation = PreviewNavigationRequest(
+                documentID: item.id,
+                anchor: heading
+            )
+        }
     }
 
     /// Opens a file handed to the app directly (Finder double-click / "Open

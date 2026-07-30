@@ -40,10 +40,15 @@ struct MarkdownPreviewView: View {
     private struct RenderKey: Equatable {
         var documentID: FileID
         var openDocumentIdentity: ObjectIdentifier
+        var indexRevision: Int
     }
 
     private var renderKey: RenderKey {
-        RenderKey(documentID: document.id, openDocumentIdentity: ObjectIdentifier(openDocument))
+        RenderKey(
+            documentID: document.id,
+            openDocumentIdentity: ObjectIdentifier(openDocument),
+            indexRevision: model.store.knowledgeIndexRevision
+        )
     }
 
     var body: some View {
@@ -53,9 +58,14 @@ struct MarkdownPreviewView: View {
                     documentID: rendered.id,
                     title: rendered.title,
                     body: rendered.html,
+                    anchor: model.pendingPreviewNavigation?.documentID == document.id
+                        ? model.pendingPreviewNavigation?.anchor : nil,
                     workspaceRoot: { [store = model.store] in store.rootURL },
-                    onOpenLocalMarkdown: { path in
-                        model.openDocument(atAbsolutePath: path)
+                    onOpenLocalMarkdown: { path, heading in
+                        model.openDocument(atAbsolutePath: path, heading: heading)
+                    },
+                    onCreateMissingNote: { target in
+                        model.createDocument(named: target)
                     }
                 )
             } else {
@@ -88,8 +98,12 @@ struct MarkdownPreviewView: View {
 
     private func render(_ markdown: String) async -> String {
         let baseDir = document.url.deletingLastPathComponent()
+        let prepared = model.store.knowledgeIndex.renderableMarkdown(
+            markdown,
+            sourcePath: document.relativePath
+        )
         return await Task.detached(priority: .userInitiated) {
-            MarkiveCore.renderDocument(markdown: markdown, baseDir: baseDir)
+            MarkiveCore.renderDocument(markdown: prepared, baseDir: baseDir)
         }.value
     }
 }

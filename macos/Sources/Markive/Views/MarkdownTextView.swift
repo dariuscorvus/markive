@@ -11,18 +11,79 @@ import AppKit
 /// downgrades the view to TextKit 1.
 struct MarkdownTextView: NSViewRepresentable {
     let document: MarkdownDocument
+    var navigationRequest: EditorNavigationRequest?
+    var completions: (String) -> [String]
+
+    final class NativeTextView: NSTextView {
+        var markiveCompletionRange: NSRange?
+
+        override var rangeForUserCompletion: NSRange {
+            markiveCompletionRange ?? super.rangeForUserCompletion
+        }
+    }
 
     @MainActor
     final class Coordinator: NSObject, NSTextViewDelegate {
         var document: MarkdownDocument
+        var completionProvider: (String) -> [String]
         let highlighter = EditorHighlighter()
+        private var completionQuery: String?
+        var lastNavigationToken: UUID?
 
-        init(document: MarkdownDocument) {
+        init(
+            document: MarkdownDocument,
+            completionProvider: @escaping (String) -> [String] = { _ in [] }
+        ) {
             self.document = document
+            self.completionProvider = completionProvider
         }
 
         func undoManager(for view: NSTextView) -> UndoManager? {
             document.undoManager
+        }
+
+        func textDidChange(_ notification: Notification) {
+            guard let textView = notification.object as? NativeTextView,
+                  let completion = wikilinkCompletion(in: textView) else {
+                completionQuery = nil
+                if let textView = notification.object as? NativeTextView {
+                    textView.markiveCompletionRange = nil
+                }
+                return
+            }
+            textView.markiveCompletionRange = completion.range
+            guard completionQuery != completion.query else { return }
+            completionQuery = completion.query
+            DispatchQueue.main.async { [weak textView] in
+                textView?.complete(nil)
+            }
+        }
+
+        func textView(
+            _ textView: NSTextView,
+            completions words: [String],
+            forPartialWordRange charRange: NSRange,
+            indexOfSelectedItem index: UnsafeMutablePointer<Int>?
+        ) -> [String] {
+            guard let completionQuery else { return words }
+            index?.pointee = -1
+            return completionProvider(completionQuery)
+        }
+
+        private func wikilinkCompletion(in textView: NSTextView) -> (query: String, range: NSRange)? {
+            let selection = textView.selectedRange()
+            guard selection.length == 0, selection.location <= textView.string.utf16.count else {
+                return nil
+            }
+            let prefix = (textView.string as NSString).substring(
+                with: NSRange(location: 0, length: selection.location)
+            )
+            guard let marker = prefix.range(of: "[[", options: .backwards),
+                  !prefix[marker.upperBound...].contains("]]"),
+                  !prefix[marker.upperBound...].contains("\n") else { return nil }
+            let query = String(prefix[marker.upperBound...])
+            let start = (prefix[..<marker.upperBound] as Substring).utf16.count
+            return (query, NSRange(location: start, length: query.utf16.count))
         }
 
         // MARK: - List editing
@@ -97,11 +158,11 @@ struct MarkdownTextView: NSViewRepresentable {
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(document: document)
+        Coordinator(document: document, completionProvider: completions)
     }
 
     func makeNSView(context: Context) -> NSScrollView {
-        let textView = NSTextView(usingTextLayoutManager: true)
+        let textView = NativeTextView(usingTextLayoutManager: true)
         textView.allowsUndo = true
         textView.usesFindBar = true
         textView.isIncrementalSearchingEnabled = true
@@ -139,11 +200,27 @@ struct MarkdownTextView: NSViewRepresentable {
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         context.coordinator.document = document
+        context.coordinator.completionProvider = completions
         guard let textView = scrollView.documentView as? NSTextView else { return }
         // SwiftUI reuses the view when the selection moves to another
         // document; retarget the storage and reset the caret.
         if textView.textContentStorage?.textStorage !== document.textStorage {
             attach(to: textView, coordinator: context.coordinator)
+        }
+        if let request = navigationRequest,
+           request.token != context.coordinator.lastNavigationToken {
+            context.coordinator.lastNavigationToken = request.token
+            let boundedLocation = min(request.range.location, textView.string.utf16.count)
+            let boundedLength = min(
+                request.range.length,
+                textView.string.utf16.count - boundedLocation
+            )
+            let range = NSRange(location: boundedLocation, length: boundedLength)
+            textView.setSelectedRange(range)
+            textView.scrollRangeToVisible(range)
+            DispatchQueue.main.async {
+                textView.window?.makeFirstResponder(textView)
+            }
         }
     }
 

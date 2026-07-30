@@ -31,6 +31,15 @@ struct AppCommands: Commands {
                 Button("Quick Open…") { workspace?.isQuickOpenPresented = true }
                     .keyboardShortcut("p")
                     .disabled(workspace?.isWorkspaceOpen != true)
+                Button("Search Workspace…") { workspace?.isKnowledgeSearchPresented = true }
+                    .keyboardShortcut("f", modifiers: [.command, .shift])
+                    .disabled(workspace?.isWorkspaceOpen != true)
+                Divider()
+                Button("Open Today's Note") { workspace?.openToday() }
+                    .keyboardShortcut("d", modifiers: [.command, .option])
+                    .disabled(workspace?.isWorkspaceOpen != true)
+                Button("New from Template…") { workspace?.isTemplatePickerPresented = true }
+                    .disabled(workspace?.store.templateDocuments().isEmpty != false)
             }
             CommandGroup(replacing: .saveItem) {
                 // Documents autosave in place; ⌘S commits immediately.

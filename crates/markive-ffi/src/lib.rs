@@ -40,6 +40,23 @@ pub extern "C" fn mk_render_document(
     }
 }
 
+/// Analyzes headings, links, frontmatter, aliases, tags, and tasks and returns
+/// a caller-owned JSON string. Returns null on invalid UTF-8 input.
+#[unsafe(no_mangle)]
+pub extern "C" fn mk_analyze_document(markdown: *const c_char) -> *mut c_char {
+    if markdown.is_null() {
+        return std::ptr::null_mut();
+    }
+    let Ok(markdown) = (unsafe { CStr::from_ptr(markdown) }).to_str() else {
+        return std::ptr::null_mut();
+    };
+
+    match CString::new(markive_core::analyze_document_json(markdown)) {
+        Ok(json) => json.into_raw(),
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
 /// One editor highlight span: a half-open `[start, end)` byte range of
 /// the UTF-8 source and a kind discriminant matching
 /// `markive_core::SpanKind` (0 heading … 13 code type).
@@ -133,6 +150,17 @@ mod tests {
         assert_eq!((spans[0].start, spans[0].end, spans[0].kind), (0, 5, 0));
         assert_eq!(spans[1].kind, 1);
         mk_spans_free(out, len);
+    }
+
+    #[test]
+    fn analyzes_and_frees() {
+        let input = CString::new("---\ntags: [work]\n---\n# Hello\n\n[[Target]]").unwrap();
+        let out = mk_analyze_document(input.as_ptr());
+        assert!(!out.is_null());
+        let json = unsafe { CStr::from_ptr(out) }.to_str().unwrap().to_owned();
+        assert!(json.contains("\"tags\":[\"work\"]"));
+        assert!(json.contains("\"kind\":\"wikilink\""));
+        mk_string_free(out);
     }
 
     #[test]

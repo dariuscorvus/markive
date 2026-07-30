@@ -9,6 +9,10 @@
 // UTF-8 input.
 char *mk_render_document(const char *markdown, const char *base_dir);
 
+// Analyzes headings, links, frontmatter, aliases, tags, and tasks and returns
+// a caller-owned JSON string. Returns NULL on invalid UTF-8 input.
+char *mk_analyze_document(const char *markdown);
+
 // Releases a string returned by this library. NULL is a no-op.
 void mk_string_free(char *ptr);
 

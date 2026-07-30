@@ -21,6 +21,7 @@ enum PreviewPage {
         <style>\(css)</style>
         <script src="\(mermaidScriptURL)"></script>
         <script>\(mermaidBootstrap)</script>
+        <script>\(calloutBootstrap)</script>
         </head>
         <body><article id="content" class="markdown-body">
         \(body)
@@ -38,6 +39,7 @@ enum PreviewPage {
         }
         return """
         document.getElementById('content').innerHTML = \(json);
+        if (window.__markiveRenderCallouts) { window.__markiveRenderCallouts(); }
         if (window.__markiveRenderMermaid) { window.__markiveRenderMermaid(); }
         """
     }
@@ -127,6 +129,55 @@ enum PreviewPage {
         if (window.matchMedia) {
             window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', renderAll);
         }
+    })();
+    """
+
+    /// Converts sanitized blockquotes beginning with Obsidian's `[!type]`
+    /// marker into semantic callouts. It only rearranges already-sanitized
+    /// nodes and never evaluates note-provided HTML or script.
+    static let calloutBootstrap = """
+    (function () {
+        function titleFor(type) {
+            return type.charAt(0).toUpperCase() + type.slice(1).replace(/-/g, ' ');
+        }
+        function renderAll() {
+            var quotes = Array.from(document.querySelectorAll('blockquote'));
+            quotes.forEach(function (quote) {
+                if (quote.dataset.markiveCallout === 'true') return;
+                var first = quote.firstElementChild;
+                if (!first) return;
+                var walker = document.createTreeWalker(first, NodeFilter.SHOW_TEXT);
+                var textNode = walker.nextNode();
+                if (!textNode) return;
+                var match = textNode.nodeValue.match(/^\\[!([^\\]]+)\\]([+-])?\\s*(.*)/);
+                if (!match) return;
+
+                var type = match[1].toLowerCase();
+                var fold = match[2] || '';
+                var customTitle = match[3].trim();
+                textNode.nodeValue = textNode.nodeValue.slice(match[0].length);
+                if (!first.textContent.trim()) first.remove();
+
+                var callout = fold ? document.createElement('details') : document.createElement('aside');
+                callout.className = 'callout callout-' + type;
+                callout.dataset.callout = type;
+                callout.dataset.markiveCallout = 'true';
+                if (fold === '+') callout.open = true;
+
+                var title = fold ? document.createElement('summary') : document.createElement('div');
+                title.className = 'callout-title';
+                title.textContent = customTitle || titleFor(type);
+                callout.appendChild(title);
+
+                var content = document.createElement('div');
+                content.className = 'callout-content';
+                while (quote.firstChild) content.appendChild(quote.firstChild);
+                callout.appendChild(content);
+                quote.replaceWith(callout);
+            });
+        }
+        window.__markiveRenderCallouts = renderAll;
+        document.addEventListener('DOMContentLoaded', renderAll);
     })();
     """
 
@@ -227,6 +278,8 @@ enum PreviewPage {
     h1:first-child { margin-top: 0; }
     a { color: var(--accent); text-decoration: none; }
     a:hover { text-decoration: underline; }
+    .broken-link { color: var(--danger); text-decoration: underline wavy; }
+    .ambiguous-link { color: #ff9500; text-decoration: underline dotted; }
     p, ul, ol, blockquote, table, pre { margin: 0 0 1em; }
     code, pre {
         font: 85%/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -269,6 +322,25 @@ enum PreviewPage {
         color: var(--fg-muted);
         border-left: .25em solid var(--border);
     }
+    .callout {
+        --callout-accent: var(--accent);
+        display: block;
+        margin: 0 0 1em;
+        padding: .85em 1em;
+        border: 1px solid color-mix(in srgb, var(--callout-accent) 35%, transparent);
+        border-left: .3em solid var(--callout-accent);
+        border-radius: 10px;
+        background: color-mix(in srgb, var(--callout-accent) 9%, transparent);
+    }
+    .callout-title { color: var(--callout-accent); font-weight: 650; }
+    summary.callout-title { cursor: pointer; }
+    .callout-content > :first-child { margin-top: .55em; }
+    .callout-content > :last-child { margin-bottom: 0; }
+    .callout-warning, .callout-caution, .callout-attention { --callout-accent: #ff9500; }
+    .callout-danger, .callout-error, .callout-failure, .callout-bug { --callout-accent: var(--danger); }
+    .callout-success, .callout-check, .callout-done { --callout-accent: #34c759; }
+    .callout-question, .callout-help, .callout-faq { --callout-accent: #af52de; }
+    .callout-tip, .callout-hint, .callout-important { --callout-accent: #30b0c7; }
     table { border-collapse: collapse; display: block; overflow-x: auto; }
     th, td { padding: .4em .8em; border: 1px solid var(--border); }
     th { font-weight: 600; }

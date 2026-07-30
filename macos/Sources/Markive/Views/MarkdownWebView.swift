@@ -14,10 +14,13 @@ struct MarkdownWebView: NSViewRepresentable {
     var title: String
     /// Sanitized body HTML from markive-core.
     var body: String
+    var anchor: String? = nil
     /// Current workspace root for asset containment; nil denies all reads.
     var workspaceRoot: () -> URL?
     /// A local Markdown file was clicked (absolute path inside the workspace).
-    var onOpenLocalMarkdown: (String) -> Void
+    var onOpenLocalMarkdown: (String, String?) -> Void
+    /// An unresolved wikilink was clicked.
+    var onCreateMissingNote: (String) -> Void = { _ in }
 
     @MainActor
     final class Coordinator: NSObject, WKNavigationDelegate {
@@ -26,6 +29,7 @@ struct MarkdownWebView: NSViewRepresentable {
         private var loadedDocumentID: FileID?
         private var appliedBody: String?
         private var pageReady = false
+        private var appliedAnchor: String?
         private var loadTask: Task<Void, Never>?
 
         init(parent: MarkdownWebView) {
@@ -37,6 +41,7 @@ struct MarkdownWebView: NSViewRepresentable {
             if loadedDocumentID != parent.documentID {
                 loadedDocumentID = parent.documentID
                 appliedBody = parent.body
+                appliedAnchor = nil
                 pageReady = false
                 loadTask?.cancel()
                 loadTask = Task {
@@ -56,6 +61,7 @@ struct MarkdownWebView: NSViewRepresentable {
                 appliedBody = parent.body
                 swapContent(in: webView)
             }
+            scrollToAnchor(in: webView)
         }
 
         private func swapContent(in webView: WKWebView) {
@@ -70,6 +76,20 @@ struct MarkdownWebView: NSViewRepresentable {
                 appliedBody = parent.body
             }
             swapContent(in: webView)
+            scrollToAnchor(in: webView)
+        }
+
+        private func scrollToAnchor(in webView: WKWebView) {
+            guard pageReady, let anchor = parent.anchor,
+                  appliedAnchor != anchor,
+                  let json = try? String(
+                    data: JSONEncoder().encode(anchor.removingPercentEncoding ?? anchor),
+                    encoding: .utf8
+                  ) else { return }
+            appliedAnchor = anchor
+            webView.evaluateJavaScript(
+                "document.getElementById(\(json))?.scrollIntoView({block:'start'});"
+            )
         }
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: any Error) {
@@ -100,7 +120,20 @@ struct MarkdownWebView: NSViewRepresentable {
             case "http", "https":
                 NSWorkspace.shared.open(url)
             case PreviewPage.scheme where WorkspaceStore.markdownExtensions.contains(url.pathExtension.lowercased()):
-                parent.onOpenLocalMarkdown(url.path)
+                parent.onOpenLocalMarkdown(url.path, url.fragment)
+            case PreviewPage.scheme where url.fragment != nil:
+                let anchor = url.fragment?.removingPercentEncoding ?? ""
+                if let json = try? String(data: JSONEncoder().encode(anchor), encoding: .utf8) {
+                    webView.evaluateJavaScript(
+                        "document.getElementById(\(json))?.scrollIntoView({block:'start'});"
+                    )
+                }
+            case "markive-create":
+                let target = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                    .removingPercentEncoding ?? ""
+                if !target.isEmpty {
+                    parent.onCreateMissingNote(target)
+                }
             default:
                 break
             }
