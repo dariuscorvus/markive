@@ -146,6 +146,7 @@ fn markdown_options() -> Options {
     options.insert(Options::ENABLE_TABLES);
     options.insert(Options::ENABLE_TASKLISTS);
     options.insert(Options::ENABLE_FOOTNOTES);
+    options.insert(Options::ENABLE_MATH);
     options
 }
 
@@ -156,7 +157,10 @@ fn sanitize(html: &str) -> String {
         .add_tags([
             "div", "section", "article", "aside", "main", "figure", "figcaption",
             "details", "summary", "dialog", "data", "mark", "meter", "progress", "time",
-            "input", "button",
+            "input", "button", "math", "mfrac", "mi", "mmultiscripts", "mn", "mo",
+            "mover", "mroot", "mrow", "mspace", "msqrt", "mstyle", "msub", "msubsup",
+            "msup", "mtable", "mtd", "mtext", "mtr", "munder", "munderover",
+            "semantics",
         ])
         .add_tag_attributes("div", ["class", "id", "tabindex"])
         .add_tag_attributes("section", ["class", "id"])
@@ -165,7 +169,7 @@ fn sanitize(html: &str) -> String {
         // `language-xxx` on `<code>` and `tok-xxx` on `<span>`, both from
         // the fenced-code-block highlighter's own fixed vocabulary.
         .add_tag_attributes("code", ["class"])
-        .add_tag_attributes("span", ["class", "id"])
+        .add_tag_attributes("span", ["class", "id", "data-source", "title"])
         .add_tag_attributes("sup", ["class", "id", "tabindex"])
         .add_tag_attributes("a", ["class", "id"])
         .add_tag_attributes("details", ["open"])
@@ -175,6 +179,19 @@ fn sanitize(html: &str) -> String {
         .add_tag_attributes("meter", ["value", "min", "max", "low", "high"])
         .add_tag_attributes("progress", ["value", "max"])
         .add_tag_attributes("time", ["datetime"]);
+    for tag in [
+        "math", "mfrac", "mi", "mmultiscripts", "mn", "mo", "mover", "mroot", "mrow",
+        "mspace", "msqrt", "mstyle", "msub", "msubsup", "msup", "mtable", "mtd",
+        "mtext", "mtr", "munder", "munderover", "semantics",
+    ] {
+        builder.add_tag_attributes(
+            tag,
+            [
+                "accent", "class", "display", "displaystyle", "form", "linethickness",
+                "mathvariant", "maxsize", "minsize", "stretchy", "width", "xmlns",
+            ],
+        );
+    }
     builder.add_url_schemes(&["markive-create"]);
     // GitHub keeps the legacy `align` attribute; READMEs rely on it to
     // center images and badges.
@@ -341,6 +358,50 @@ fn footnote_id(label: &str) -> String {
     format!("{}-{bytes}", if slug.is_empty() { "note" } else { &slug })
 }
 
+fn events_with_math(events: Vec<Event<'_>>) -> Vec<Event<'_>> {
+    events
+        .into_iter()
+        .map(|event| match event {
+            Event::InlineMath(source) => render_math_event(&source, false),
+            Event::DisplayMath(source) => render_math_event(&source, true),
+            other => other,
+        })
+        .collect()
+}
+
+fn render_math_event(source: &str, display: bool) -> Event<'static> {
+    let style = if display {
+        latex2mathml::DisplayStyle::Block
+    } else {
+        latex2mathml::DisplayStyle::Inline
+    };
+    let delimiter = if display { "$$" } else { "$" };
+    let original = format!("{delimiter}{source}{delimiter}");
+    let mut escaped_source = String::new();
+    escape_html_attribute(&mut escaped_source, &original);
+    match latex2mathml::latex_to_mathml(source, style) {
+        Ok(mathml) => Event::Html(
+            format!(
+                "<span class=\"math-expression{}\" data-source=\"{escaped_source}\">{mathml}</span>",
+                if display { " math-display" } else { "" }
+            )
+            .into(),
+        ),
+        Err(error) => {
+            let mut escaped_error = String::new();
+            escape_html_attribute(&mut escaped_error, &error.to_string());
+            let mut visible_source = String::new();
+            escape_html_text(&mut visible_source, &original);
+            Event::Html(
+                format!(
+                    "<span class=\"math-expression math-error\" data-source=\"{escaped_source}\" title=\"Could not render math: {escaped_error}\">{visible_source}<span class=\"math-error-message\"> — Could not render math</span></span>"
+                )
+                .into(),
+            )
+        }
+    }
+}
+
 /// Replaces each fenced code block that names a recognized language with
 /// a pre-rendered, syntax-highlighted `<pre><code>` [`Event::Html`]. Fences
 /// with no info string, an unrecognized language, or indented code blocks
@@ -425,12 +486,25 @@ fn escape_html_text(out: &mut String, text: &str) {
     }
 }
 
+fn escape_html_attribute(out: &mut String, text: &str) {
+    for c in text.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(c),
+        }
+    }
+}
+
 #[must_use]
 pub fn render_markdown(markdown: &str) -> String {
     let mut html = String::new();
-    let events = highlight_code_blocks(events_with_footnote_navigation(
+    let events = highlight_code_blocks(events_with_math(events_with_footnote_navigation(
         events_with_heading_ids(markdown),
-    ));
+    )));
     pulldown_cmark::html::push_html(&mut html, events.into_iter());
 
     sanitize(&html)
@@ -450,7 +524,7 @@ pub fn render_markdown(markdown: &str) -> String {
 /// sources have nothing to resolve against and pass through untouched.
 #[must_use]
 pub fn render_document(markdown: &str, base_dir: Option<&Path>) -> RenderedDocument {
-    let events = events_with_footnote_navigation(events_with_heading_ids(markdown))
+    let events = events_with_math(events_with_footnote_navigation(events_with_heading_ids(markdown)))
         .into_iter()
         .map(|event| match event {
             // Local link targets become absolute so the app can open
@@ -933,6 +1007,36 @@ mod tests {
 
         assert!(html.contains("[^nowhere]"));
         assert!(!html.contains("href=\"#fn-nowhere"));
+    }
+
+    #[test]
+    fn renders_inline_and_display_math_as_local_mathml() {
+        let html = render_markdown(
+            r"Euler: $e^{i\pi}+1=0$.
+
+$$\frac{-b \pm \sqrt{b^2-4ac}}{2a}$$",
+        );
+
+        assert!(html.contains("class=\"math-expression\""));
+        assert!(html.contains("class=\"math-expression math-display\""));
+        assert!(html.contains("<math"));
+        assert!(html.contains("<msup>"));
+        assert!(html.contains("<mfrac>"));
+        assert!(html.contains("data-source=\"$e^{i\\pi}+1=0$\""));
+        assert!(html.contains("data-source=\"$$\\frac{-b \\pm \\sqrt{b^2-4ac}}{2a}$$\""));
+    }
+
+    #[test]
+    fn invalid_math_keeps_source_and_never_emits_source_html() {
+        let html = render_markdown(
+            r"Bad: $\begin{unknown}x\end{unknown}$ and $\text{<script>alert(1)</script>}$.",
+        );
+
+        assert!(html.contains("math-error"));
+        assert!(html.contains(r"$\begin{unknown}x\end{unknown}$"));
+        assert!(html.contains("Could not render math"));
+        assert!(!html.contains("<script"));
+        assert!(!html.contains("</script>"));
     }
 
     #[test]
