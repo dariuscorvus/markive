@@ -278,6 +278,22 @@ enum PreviewPage {
     h1:first-child { margin-top: 0; }
     a { color: var(--accent); text-decoration: none; }
     a:hover { text-decoration: underline; }
+    a:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 3px;
+        border-radius: 2px;
+    }
+    .footnote-reference { margin-left: .08em; }
+    .footnote-definition {
+        display: flex;
+        gap: .55em;
+        align-items: baseline;
+        color: var(--muted);
+    }
+    .footnote-definition > p { flex: 1; }
+    .footnote-definition-label { color: var(--fg); }
+    .footnote-backlinks { white-space: nowrap; }
+    .unresolved-footnote { color: var(--danger); text-decoration: underline wavy; }
     .broken-link { color: var(--danger); text-decoration: underline wavy; }
     .ambiguous-link { color: #ff9500; text-decoration: underline dotted; }
     p, ul, ol, blockquote, table, pre { margin: 0 0 1em; }

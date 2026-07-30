@@ -130,7 +130,15 @@ struct MarkdownWebView: NSViewRepresentable {
                 let anchor = url.fragment?.removingPercentEncoding ?? ""
                 if let json = try? String(data: JSONEncoder().encode(anchor), encoding: .utf8) {
                     webView.evaluateJavaScript(
-                        "document.getElementById(\(json))?.scrollIntoView({block:'start'});"
+                        """
+                        (function () {
+                          const target = document.getElementById(\(json));
+                          if (target) {
+                            target.scrollIntoView({block:'start'});
+                            target.focus({preventScroll:true});
+                          }
+                        })();
+                        """
                     )
                 }
             case "markive-create":

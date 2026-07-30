@@ -9,6 +9,8 @@ import Testing
         #expect(page.contains("<style>"))
         #expect(page.contains("A &lt;b&gt;&quot;title&quot;&lt;/b&gt;"))
         #expect(!page.contains("<title>A <b>"))
+        #expect(page.contains("a:focus-visible"))
+        #expect(page.contains(".footnote-definition"))
     }
 
     @Test func containmentAllowsInsideAndDeniesOutside() throws {
