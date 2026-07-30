@@ -284,23 +284,40 @@ struct KnowledgeIndex: Equatable, Sendable {
     }
 
     func rewritingInboundLinks(from oldPath: String, to newPath: String) -> [String: String] {
+        rewritingInboundLinks(moving: [oldPath: newPath])
+    }
+
+    /// Rewrites links for a file or folder move as one operation. A source may
+    /// itself be moving, so Markdown links are made relative to its new folder.
+    func rewritingInboundLinks(moving paths: [String: String]) -> [String: String] {
         var rewritten: [String: String] = [:]
-        let newTitle = URL(fileURLWithPath: newPath).deletingPathExtension().lastPathComponent
 
         for source in documents {
-            let inbound = source.analysis.links.filter {
-                guard case .resolved(let target) = resolve($0, from: source.relativePath) else {
-                    return false
+            let sourceIsMoving = paths[source.relativePath] != nil
+            let inbound = source.analysis.links.compactMap { link -> (IndexedLink, String)? in
+                guard case .resolved(let target) = resolve(link, from: source.relativePath) else {
+                    return nil
                 }
-                return target.relativePath == oldPath
+                let targetIsMoving = paths[target.relativePath] != nil
+                guard sourceIsMoving || targetIsMoving else { return nil }
+                let newPath = paths[target.relativePath] ?? target.relativePath
+                return (link, newPath)
             }
             guard !inbound.isEmpty else { continue }
 
             var content = source.content
-            for link in inbound.sorted(by: { $0.utf16Location > $1.utf16Location }) {
+            let sourcePath = paths[source.relativePath] ?? source.relativePath
+            let sourceFolder = sourcePath.lastIndex(of: "/").map {
+                String(sourcePath[..<$0])
+            } ?? ""
+            for (link, newPath) in inbound.sorted(by: {
+                $0.0.utf16Location > $1.0.utf16Location
+            }) {
                 let range = NSRange(location: link.utf16Location, length: link.utf16Length)
                 guard let swiftRange = Range(range, in: content) else { continue }
                 let heading = link.heading.map { "#\($0)" } ?? ""
+                let newTitle = URL(fileURLWithPath: newPath)
+                    .deletingPathExtension().lastPathComponent
                 let replacement: String
                 switch link.kind {
                 case .wikilink, .embed:
@@ -315,7 +332,7 @@ struct KnowledgeIndex: Equatable, Sendable {
                     replacement = "\(prefix)[[\(target)\(heading)\(alias)]]"
                 case .markdown:
                     let relative = relativeLinkPath(
-                        from: source.relativeFolder,
+                        from: sourceFolder,
                         to: newPath
                     )
                     replacement = "[\(escapedMarkdownLabel(link.display))](\(percentEncodedPath(relative))\(heading))"

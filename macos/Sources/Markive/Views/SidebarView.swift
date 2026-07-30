@@ -3,6 +3,11 @@ import SwiftUI
 struct SidebarView: View {
     @Bindable var model: WorkspaceModel
     @State private var foldersExpanded = true
+    @State private var isCreateFolderPresented = false
+    @State private var createFolderParent: String?
+    @State private var folderName = ""
+    @State private var renameFolderPath: String?
+    @State private var renamedFolderName = ""
 
     var body: some View {
         Group {
@@ -25,6 +30,36 @@ struct SidebarView: View {
             }
         }
         .navigationSplitViewColumnWidth(min: 180, ideal: 220, max: 300)
+        .alert("New Folder", isPresented: $isCreateFolderPresented) {
+            TextField("Name", text: $folderName)
+            Button("Create") {
+                model.createFolder(named: folderName, in: createFolderParent)
+                folderName = ""
+                createFolderParent = nil
+            }
+            Button("Cancel", role: .cancel) {
+                folderName = ""
+                createFolderParent = nil
+            }
+        } message: {
+            Text("Create a folder in \(createFolderParent ?? model.workspaceName ?? "the workspace").")
+        }
+        .alert(
+            "Rename Folder",
+            isPresented: Binding(
+                get: { renameFolderPath != nil },
+                set: { if !$0 { renameFolderPath = nil } }
+            )
+        ) {
+            TextField("Name", text: $renamedFolderName)
+            Button("Rename") {
+                if let path = renameFolderPath {
+                    model.renameFolder(relativePath: path, to: renamedFolderName)
+                }
+                renameFolderPath = nil
+            }
+            Button("Cancel", role: .cancel) { renameFolderPath = nil }
+        }
     }
 
     private var librarySection: some View {
@@ -74,15 +109,41 @@ struct SidebarView: View {
         Section("Workspace") {
             Label(model.workspaceName ?? "Workspace", systemImage: "archivebox")
                 .tag(SidebarItem.workspaceRoot)
+                .dropDestination(for: URL.self) { urls, _ in
+                    model.moveDocuments(at: urls, toFolder: "")
+                }
+                .contextMenu {
+                    Button("New Folder…") { presentNewFolder(in: nil) }
+                }
             DisclosureGroup(isExpanded: $foldersExpanded) {
                 OutlineGroup(model.store.folderTree, children: \.children) { folder in
-                    Label(folder.name, systemImage: "folder")
-                        .tag(SidebarItem.folder(folder.id))
+                    folderRow(folder)
                 }
             } label: {
                 Label("Folders", systemImage: "folder")
             }
         }
+    }
+
+    private func folderRow(_ folder: FolderNode) -> some View {
+        Label(folder.name, systemImage: "folder")
+            .tag(SidebarItem.folder(folder.id))
+            .dropDestination(for: URL.self) { urls, _ in
+                model.moveDocuments(at: urls, toFolder: folder.id)
+            }
+            .contextMenu {
+                Button("New Folder…") { presentNewFolder(in: folder.id) }
+                Button("Rename…") {
+                    renamedFolderName = folder.name
+                    renameFolderPath = folder.id
+                }
+            }
+    }
+
+    private func presentNewFolder(in parent: String?) {
+        createFolderParent = parent
+        folderName = ""
+        isCreateFolderPresented = true
     }
 
     private var savedSearchesSection: some View {

@@ -163,6 +163,44 @@ private func knowledgeDefaults() -> UserDefaults {
         #expect(!matches.isEmpty)
         #expect(elapsed < .seconds(1), "10,000-path completion took \(elapsed)")
     }
+
+    @Test func rewritesSeveralMovedTargetsUsingTheMovedSourceFolder() throws {
+        let fixture = try KnowledgeFixture(files: [
+            ("Notes/Source.md", "See [one](One.md) and [two](Two.md).\n"),
+            ("Notes/One.md", "# One"),
+            ("Notes/Two.md", "# Two"),
+            ("Outside.md", "See [one](Notes/One.md) and [[Notes/Two]].\n"),
+        ])
+        defer { fixture.remove() }
+
+        let snapshot = WorkspaceStore.scan(root: fixture.root, rootName: "Fixture")
+        let index = KnowledgeIndex.build(documents: snapshot.documents)
+        let rewritten = index.rewritingInboundLinks(moving: [
+            "Notes/Source.md": "Archive/Source.md",
+            "Notes/One.md": "Archive/One.md",
+            "Notes/Two.md": "Archive/Two.md",
+        ])
+
+        #expect(rewritten["Notes/Source.md"] == nil)
+        #expect(rewritten["Outside.md"]?.contains("[one](Archive/One.md)") == true)
+        #expect(rewritten["Outside.md"]?.contains("[[Archive/Two]]") == true)
+    }
+
+    @Test func movingASourceRebasesLinksToTargetsThatStayPut() throws {
+        let fixture = try KnowledgeFixture(files: [
+            ("Notes/Source.md", "See [target](Target.md).\n"),
+            ("Notes/Target.md", "# Target"),
+        ])
+        defer { fixture.remove() }
+
+        let snapshot = WorkspaceStore.scan(root: fixture.root, rootName: "Fixture")
+        let index = KnowledgeIndex.build(documents: snapshot.documents)
+        let rewritten = index.rewritingInboundLinks(moving: [
+            "Notes/Source.md": "Archive/Deep/Source.md",
+        ])
+
+        #expect(rewritten["Notes/Source.md"] == "See [target](../../Notes/Target.md).\n")
+    }
 }
 
 @Suite struct DailyNoteTests {

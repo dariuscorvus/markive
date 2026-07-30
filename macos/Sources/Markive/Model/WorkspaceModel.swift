@@ -373,7 +373,7 @@ final class WorkspaceModel {
 
     // MARK: - Actions
 
-    /// User-visible message from a failed create/rename/trash. Views alert on it.
+    /// User-visible message from a failed filesystem action. Views alert on it.
     var lastErrorMessage: String?
 
     func newDocument() {
@@ -488,6 +488,69 @@ final class WorkspaceModel {
             Task { await store.rescan() }
         } catch {
             lastErrorMessage = error.localizedDescription
+        }
+    }
+
+    func createFolder(named name: String, in parentPath: String?) {
+        do {
+            let path = try store.createFolder(named: name, in: parentPath)
+            Task {
+                await store.rescan()
+                sidebarSelection = .folder(path)
+            }
+        } catch {
+            lastErrorMessage = error.localizedDescription
+        }
+    }
+
+    func renameFolder(relativePath: String, to name: String) {
+        do {
+            let newPath = try store.renameFolder(relativePath: relativePath, to: name)
+            if case .folder(let selected) = sidebarSelection,
+               selected == relativePath || selected.hasPrefix(relativePath + "/") {
+                sidebarSelection = .folder(newPath + selected.dropFirst(relativePath.count))
+            }
+            Task {
+                await store.rescan()
+                await store.rebuildIndex()
+            }
+        } catch {
+            lastErrorMessage = error.localizedDescription
+        }
+    }
+
+    func move(_ item: DocumentItem, toFolder relativeFolder: String) {
+        do {
+            _ = try store.move(item, toFolder: relativeFolder)
+            Task {
+                await store.rescan()
+                await store.rebuildIndex()
+            }
+        } catch {
+            lastErrorMessage = error.localizedDescription
+        }
+    }
+
+    @discardableResult
+    func moveDocuments(at urls: [URL], toFolder relativeFolder: String) -> Bool {
+        let byPath = Dictionary(uniqueKeysWithValues: store.documents.map {
+            ($0.url.canonicalPath, $0)
+        })
+        let items = urls.compactMap { byPath[$0.canonicalPath] }
+        guard !items.isEmpty else { return false }
+        do {
+            for item in items {
+                _ = try store.move(item, toFolder: relativeFolder)
+            }
+            Task {
+                await store.rescan()
+                await store.rebuildIndex()
+            }
+            return true
+        } catch {
+            lastErrorMessage = error.localizedDescription
+            Task { await store.rescan() }
+            return false
         }
     }
 
