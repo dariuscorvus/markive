@@ -247,6 +247,26 @@ private func knowledgeDefaults() -> UserDefaults {
         #expect(!rendered.contains("^important"))
     }
 
+    @Test func hidesBlockIdentifiersOnlyInRenderedMarkdown() throws {
+        let fixture = try KnowledgeFixture(files: [
+            ("Source.md", "A visible paragraph. ^source\n\n![[Target#^target]]"),
+            ("Target.md", "An embedded paragraph. ^target"),
+        ])
+        defer { fixture.remove() }
+        let index = KnowledgeIndex.build(documents: fixture.snapshot().documents)
+        let source = try #require(index.documentsByPath["Source.md"])
+        let target = try #require(index.documentsByPath["Target.md"])
+
+        let rendered = index.renderableMarkdown(source.content, sourcePath: source.relativePath)
+
+        #expect(source.content.contains("^source"))
+        #expect(target.content.contains("^target"))
+        #expect(!rendered.contains("^source"))
+        #expect(!rendered.contains("^target"))
+        #expect(rendered.contains("A visible paragraph."))
+        #expect(rendered.contains("An embedded paragraph."))
+    }
+
     @Test func embedFailuresAreVisibleAndRecursionIsBounded() throws {
         let fixture = try KnowledgeFixture(files: [
             ("A.md", "![[B]]\n\n![[Missing]]\n\n![[B#No Such Heading]]\n\n![[One]]"),
