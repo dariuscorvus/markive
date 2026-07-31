@@ -431,6 +431,7 @@ struct KnowledgeIndex: Equatable, Sendable {
             stack: [sourcePath]
         )
         output = rewritingWikilinks(in: output, sourcePath: sourcePath, fallback: source.analysis)
+        output = strippingBlockIdentifiers(in: output)
         return expandDataview(
             in: strippingLeadingFrontmatter(from: output),
             sourcePath: sourcePath

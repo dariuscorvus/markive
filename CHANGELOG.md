@@ -4,6 +4,12 @@ All notable changes to Markive are documented here.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-07-31
+
+### Fixed
+
+- Hidden trailing block IDs in rendered previews while preserving them in Markdown source and block embeds.
+
 ## [0.3.0] - 2026-07-31
 
 ### Added
@@ -80,7 +86,8 @@ All notable changes to Markive are documented here.
 - The first Markive release: a Markdown viewer and editor for macOS.
 - Finder open, drag and drop, local images and links, source and rendered views, atomic saving, external-change handling, native menus, appearance settings, session restoration, accessibility coverage, the command-line tool, and universal DMG packaging.
 
-[Unreleased]: https://github.com/dariuscorvus/markive/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/dariuscorvus/markive/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/dariuscorvus/markive/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/dariuscorvus/markive/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/dariuscorvus/markive/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/dariuscorvus/markive/compare/v0.1.1...v0.1.2
